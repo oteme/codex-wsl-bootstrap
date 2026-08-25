@@ -1,2 +1,4 @@
 .gstack/
+__pycache__/
+*.pyc
 codex-wsl-bootstrap.zip

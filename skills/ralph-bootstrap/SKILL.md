@@ -31,6 +31,9 @@ The script creates:
 
 It also creates `scripts/ralph/.gitignore` for runner logs.
 
+The generated instructions make commits conditional on an independent fail-close/clean-break
+review performed by `ralph-run`; workers never commit directly.
+
 ## Boundaries
 
 - Do not create `scripts/ralph/prd.json`. The `ralph` skill owns that file because it must

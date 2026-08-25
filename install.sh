@@ -74,7 +74,7 @@ ensure_ubuntu_wsl() {
 ensure_base_tools() {
   local missing=()
   local tool
-  for tool in curl git; do
+  for tool in curl git python3; do
     command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
   done
   [[ "${#missing[@]}" -eq 0 ]] && return
@@ -89,7 +89,7 @@ ensure_base_tools() {
     sudo_cmd=(sudo)
   fi
   run "${sudo_cmd[@]}" apt-get update
-  run "${sudo_cmd[@]}" apt-get install -y ca-certificates curl git
+  run "${sudo_cmd[@]}" apt-get install -y ca-certificates curl git python3
 }
 
 download_and_run() {
@@ -170,39 +170,16 @@ checkout_repo() {
 install_skill() {
   local source_dir="$1"
   local skill_name="$2"
+  local instructions_overlay="${3:-}"
   local destination="$SKILLS_DIR/$skill_name"
-  local stage="$SKILLS_DIR/.${skill_name}.stage.$$"
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "+ install skill $skill_name -> $destination"
     return
   fi
 
-  [[ -f "$source_dir/SKILL.md" ]] || {
-    echo "error: invalid skill source: $source_dir" >&2
-    exit 1
-  }
-
-  if [[ -e "$destination" || -L "$destination" ]]; then
-    if [[ -L "$destination" ]]; then
-      echo "error: refusing to replace symlinked skill: $destination" >&2
-      exit 1
-    fi
-    if [[ ! -f "$destination/$MANAGED_MARKER" ]]; then
-      if ! diff -qr --exclude="$MANAGED_MARKER" "$source_dir" "$destination" >/dev/null 2>&1; then
-        echo "error: refusing to overwrite an unmanaged skill: $destination" >&2
-        exit 1
-      fi
-    fi
-  fi
-
-  rm -rf "$stage"
-  cp -a "$source_dir" "$stage"
-  touch "$stage/$MANAGED_MARKER"
-  if [[ -e "$destination" ]]; then
-    rm -rf "$destination"
-  fi
-  mv "$stage" "$destination"
+  bash "$SCRIPT_DIR/scripts/install-skill.sh" \
+    "$source_dir" "$destination" "$MANAGED_MARKER" "$instructions_overlay"
   log "Installed skill: $skill_name"
 }
 
@@ -219,8 +196,8 @@ install_gstack() {
 install_ralph() {
   checkout_repo "$RALPH_REPO" "$RALPH_REF" "$RALPH_SOURCE_DIR" "Ralph"
   run mkdir -p "$SKILLS_DIR"
-  install_skill "$RALPH_SOURCE_DIR/skills/prd" "prd"
-  install_skill "$RALPH_SOURCE_DIR/skills/ralph" "ralph"
+  install_skill "$RALPH_SOURCE_DIR/skills/prd" "prd" "$SCRIPT_DIR/config/prd-fail-close-clean-break.md"
+  install_skill "$RALPH_SOURCE_DIR/skills/ralph" "ralph" "$SCRIPT_DIR/config/ralph-fail-close-clean-break.md"
   install_skill "$SCRIPT_DIR/skills/ralph-bootstrap" "ralph-bootstrap"
   install_skill "$SCRIPT_DIR/skills/ralph-run" "ralph-run"
 }

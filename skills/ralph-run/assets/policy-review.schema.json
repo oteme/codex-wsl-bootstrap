@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["approved", "findings"],
+  "properties": {
+    "approved": { "type": "boolean" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["category", "message", "evidence"],
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": ["fallback", "exception", "compatibility", "legacy", "test", "acceptance"]
+          },
+          "message": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "evidence": { "type": "string", "minLength": 1, "maxLength": 500 }
+        }
+      }
+    }
+  }
+}
