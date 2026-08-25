@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+Usage: ralph-run-codex.sh [max-iterations] [ralph-dir]
+
+Defaults:
+  max-iterations: 10
+  ralph-dir:      $PWD/scripts/ralph
+EOF
+}
+
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  echo "Usage: ralph-run-codex.sh [max-iterations] [ralph-dir]"
+  usage
   exit 0
 fi
 
@@ -18,34 +28,56 @@ if ! [[ "$MAX_ITER" =~ ^[0-9]+$ ]] || [[ "$MAX_ITER" -lt 1 ]]; then
   echo "error: max-iterations must be a positive integer" >&2
   exit 2
 fi
-command -v codex >/dev/null 2>&1 || { echo "error: codex command not found" >&2; exit 127; }
+
+if ! command -v codex >/dev/null 2>&1; then
+  echo "error: codex command not found on PATH" >&2
+  exit 127
+fi
 
 if [[ ! -d "$RALPH_DIR_INPUT" ]]; then
   echo "error: Ralph directory not found: $RALPH_DIR_INPUT" >&2
-  echo "Run ralph-bootstrap first." >&2
+  echo "Create it first with:" >&2
+  echo "  bash ~/.codex/skills/ralph-bootstrap/scripts/bootstrap-ralph.sh" >&2
+  echo "Then create a PRD with /prd and convert it with /ralph." >&2
   exit 1
 fi
 
-RALPH_DIR="$(cd "$RALPH_DIR_INPUT" && pwd)"
-for required_file in prd.json CLAUDE.md; do
-  [[ -f "$RALPH_DIR/$required_file" ]] || {
-    echo "error: missing $RALPH_DIR/$required_file" >&2
-    exit 1
-  }
-done
+if command -v realpath >/dev/null 2>&1; then
+  RALPH_DIR="$(realpath "$RALPH_DIR_INPUT")"
+else
+  RALPH_DIR="$(cd "$RALPH_DIR_INPUT" && pwd)"
+fi
+
+if [[ ! -f "$RALPH_DIR/prd.json" || ! -f "$RALPH_DIR/CLAUDE.md" ]]; then
+  echo "error: missing Ralph inputs in $RALPH_DIR" >&2
+  [[ -f "$RALPH_DIR/prd.json" ]] || echo "missing: $RALPH_DIR/prd.json" >&2
+  [[ -f "$RALPH_DIR/CLAUDE.md" ]] || echo "missing: $RALPH_DIR/CLAUDE.md" >&2
+  echo "If CLAUDE.md is missing, run ralph-bootstrap. If prd.json is missing, run /prd then /ralph." >&2
+  exit 1
+fi
 
 PROGRESS_FILE="$RALPH_DIR/progress.txt"
-[[ -f "$PROGRESS_FILE" ]] || printf '# Ralph Progress Log\nStarted: %s\n---\n' "$(date)" > "$PROGRESS_FILE"
+if [[ ! -f "$PROGRESS_FILE" ]]; then
+  {
+    echo "# Ralph Progress Log"
+    echo "Started: $(date)"
+    echo "---"
+  } > "$PROGRESS_FILE"
+  echo "pre-run: created $PROGRESS_FILE"
+fi
+
 PROJECT_ROOT="$(cd "$RALPH_DIR/../.." && pwd)"
 LOG_DIR="$RALPH_DIR/logs"
 mkdir -p "$LOG_DIR"
 
 completed=0
 iterations_run=0
+
 for ((i = 1; i <= MAX_ITER; i++)); do
   iterations_run="$i"
   log_file="$LOG_DIR/codex-iteration-$i.log"
   last_message="$LOG_DIR/codex-iteration-$i-last-message.txt"
+
   echo "Ralph iteration $i of $MAX_ITER"
 
   prompt=$(cat <<EOF
@@ -53,7 +85,12 @@ You are the implementation worker for exactly one Ralph iteration.
 
 Do the implementation work directly in the project. Do not invoke the ralph-run skill, do not run ralph-run-codex.sh, and do not launch another codex exec or autonomous loop.
 
-Read $RALPH_DIR/CLAUDE.md in full and follow its instructions. The prd.json and progress.txt files are in $RALPH_DIR. Update them as instructed. If all stories are complete, include the exact tag <promise>COMPLETE</promise> in your final response.
+Read the file $RALPH_DIR/CLAUDE.md in full and execute its instructions exactly as written.
+
+That file is your complete and authoritative task specification for this iteration. The prd.json and progress.txt it refers to live in the same directory:
+$RALPH_DIR
+
+Run one Ralph iteration only. Update prd.json and progress.txt according to the instructions. If all stories are complete, include the exact tag <promise>COMPLETE</promise> in your final response.
 EOF
 )
 
@@ -70,7 +107,7 @@ EOF
   set -e
 
   if [[ "$status" -ne 0 ]]; then
-    echo "error: iteration $i failed with status $status" >&2
+    echo "error: codex exec failed in iteration $i with status $status" >&2
     echo "log: $log_file" >&2
     exit "$status"
   fi
@@ -84,13 +121,17 @@ EOF
 
   if grep -Fxq '<promise>COMPLETE</promise>' "$last_message" 2>/dev/null; then
     completed=1
+    echo "Ralph completed all tasks at iteration $i of $MAX_ITER"
     break
   fi
+
+  echo "Iteration $i complete. Continuing..."
 done
 
-[[ "$completed" -eq 1 ]] \
-  && echo "Ralph completed all tasks." \
-  || echo "Ralph reached max iterations without completing all tasks."
+if [[ "$completed" -eq 0 ]]; then
+  echo "Ralph reached max iterations ($MAX_ITER) without completing all tasks."
+fi
+
 echo "completed=$completed"
 echo "iterationsRun=$iterations_run"
 echo "maxIterations=$MAX_ITER"

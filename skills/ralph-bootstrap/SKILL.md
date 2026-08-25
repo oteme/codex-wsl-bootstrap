@@ -7,19 +7,47 @@ description: "Create the minimal scripts/ralph project scaffold for Ralph in a n
 
 Initialize Ralph's project-local working directory without creating a task list.
 
+Use this when a project does not yet have `scripts/ralph/`, especially before the
+workflow:
+
+```text
+gstack-plan-eng-review -> prd -> ralph -> ralph-run
+```
+
+## What It Creates
+
 Run this from the project root:
 
 ```bash
 bash ~/.codex/skills/ralph-bootstrap/scripts/bootstrap-ralph.sh
 ```
 
-It creates `scripts/ralph/CLAUDE.md`, `progress.txt`, `.gitignore`, `archive/`, and
-`logs/`. It must not create or overwrite `prd.json`; the `ralph` skill derives that file
-from a real PRD.
+The script creates:
 
-Leave existing scaffold files untouched. If the current directory is not a git
-worktree, warn after bootstrapping because the Ralph loop expects git branches and
-commits.
+- `scripts/ralph/CLAUDE.md`
+- `scripts/ralph/progress.txt`
+- `scripts/ralph/archive/`
+- `scripts/ralph/logs/`
 
-Afterward, the normal flow is `prd` -> `ralph` -> `ralph-run`. If a PRD already exists,
-skip `prd`.
+It also creates `scripts/ralph/.gitignore` for runner logs.
+
+## Boundaries
+
+- Do not create `scripts/ralph/prd.json`. The `ralph` skill owns that file because it must
+  be derived from a real PRD.
+- Do not overwrite an existing `CLAUDE.md`, `progress.txt`, `.gitignore`, or `prd.json`
+  unless the user explicitly asks for force/repair behavior.
+- If `prd.json` already exists, leave it untouched.
+- If the current directory is not a git repo, warn the user after bootstrapping. Ralph can
+  still be scaffolded, but the loop expects git for branches and commits.
+
+## After Bootstrapping
+
+Tell the user the next normal steps:
+
+```text
+/prd -> /ralph -> /ralph-run
+```
+
+If they already have a PRD markdown file, they can skip `/prd` and run `ralph` to generate
+`scripts/ralph/prd.json`.
