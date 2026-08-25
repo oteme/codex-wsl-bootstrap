@@ -13,12 +13,14 @@ Recreates this Codex CLI environment on another Ubuntu/WSL2 device:
 
 This assumes WSL2 with Ubuntu is already installed.
 
-1. Download `setup-wsl.cmd` and `setup-wsl.ps1` once on the new Windows device.
-2. Keep both files in the same folder and double-click `setup-wsl.cmd`.
+1. Download [`setup-wsl.cmd`](https://github.com/oteme/codex-wsl-bootstrap/raw/main/setup-wsl.cmd)
+   once on the new Windows device.
+2. Double-click `setup-wsl.cmd`.
 3. If prompted, complete the Ubuntu password and Codex sign-in steps.
 
-The launcher uses Git installed inside WSL. It checks out the latest version at
-`~/.local/share/codex-wsl-bootstrap` and runs its installer. Windows Git is not required.
+The CMD downloads the latest PowerShell launcher, which then uses Git installed inside WSL.
+It checks out the latest version at `~/.local/share/codex-wsl-bootstrap` and runs its
+installer. Windows Git is not required.
 
 To install directly from an Ubuntu/WSL terminal, run:
 
@@ -48,9 +50,10 @@ Then restart Codex CLI so it reloads the installed skills.
 
 ## Update an existing device
 
-Double-click the same `setup-wsl.cmd` again. It fetches the latest version with Git inside
-WSL and updates bootstrap-managed skills while preserving unrelated Codex configuration.
-There is no ZIP to replace or extract. Restart Codex CLI after setup completes.
+Double-click the same `setup-wsl.cmd` again. The CMD refreshes its PowerShell launcher, then
+fetches the latest version with Git inside WSL and updates bootstrap-managed skills while
+preserving unrelated Codex configuration. There is no ZIP to replace or extract. Restart
+Codex CLI after setup completes.
 
 ## Update pinned versions
 
