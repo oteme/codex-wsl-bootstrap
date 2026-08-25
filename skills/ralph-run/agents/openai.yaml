@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ralph Run"
+  short_description: "Run Ralph's autonomous PRD loop with Codex exec"
+  default_prompt: "Use $ralph-run to execute the Ralph loop for this project."

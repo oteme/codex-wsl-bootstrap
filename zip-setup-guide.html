@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>別のPCでCodex環境を作る</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #5b6670;
+      --paper: #f4f7f9;
+      --panel: #ffffff;
+      --line: #d8e0e6;
+      --blue: #1473e6;
+      --green: #178a55;
+      --yellow: #f7c948;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: "Yu Gothic UI", "Noto Sans JP", system-ui, sans-serif;
+      letter-spacing: 0;
+    }
+    main { width: min(1040px, calc(100% - 32px)); margin: 0 auto; padding: 42px 0 72px; }
+    h1 { margin: 0 0 12px; font-size: clamp(32px, 6vw, 64px); line-height: 1.1; }
+    .lead { margin: 0 0 40px; color: var(--muted); font-size: 20px; }
+    .flow { display: grid; gap: 18px; }
+    .step {
+      display: grid;
+      grid-template-columns: 86px 1fr;
+      min-height: 190px;
+      overflow: hidden;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .number {
+      display: grid;
+      place-items: center;
+      background: var(--ink);
+      color: white;
+      font-size: 40px;
+      font-weight: 800;
+    }
+    .content { display: grid; grid-template-columns: 1fr minmax(260px, 42%); align-items: center; gap: 24px; padding: 28px; }
+    h2 { margin: 0 0 8px; font-size: 28px; }
+    p { margin: 0; color: var(--muted); font-size: 17px; line-height: 1.7; }
+    .picture {
+      min-height: 132px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      background: #f9fbfc;
+      border-radius: 6px;
+      padding: 18px;
+    }
+    .icon { font-size: 68px; line-height: 1; }
+    .file {
+      width: 170px;
+      padding: 20px 14px;
+      text-align: center;
+      background: white;
+      border: 2px solid var(--blue);
+      border-radius: 6px;
+      color: var(--blue);
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .folder { width: 180px; height: 108px; position: relative; background: var(--yellow); border-radius: 5px; }
+    .folder::before { content: ""; position: absolute; width: 76px; height: 22px; left: 0; top: -16px; background: var(--yellow); border-radius: 5px 5px 0 0; }
+    .terminal { width: 100%; background: #111820; color: #c8f7dc; border-radius: 6px; padding: 18px; font-family: ui-monospace, monospace; font-size: 16px; line-height: 1.7; }
+    .done { border-color: #b8dfcc; background: #f1fbf6; }
+    .done .number { background: var(--green); }
+    .note { margin-top: 28px; padding: 20px; border-left: 5px solid var(--blue); background: white; font-size: 17px; line-height: 1.7; }
+    code { font-family: ui-monospace, monospace; color: var(--ink); }
+    @media (max-width: 720px) {
+      main { width: min(100% - 20px, 1040px); padding-top: 28px; }
+      .step { grid-template-columns: 56px 1fr; }
+      .number { font-size: 28px; }
+      .content { grid-template-columns: 1fr; padding: 22px 18px; }
+      .picture { min-height: 120px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>別のPCで<br>Codex環境を作る</h1>
+    <p class="lead">最初に2ファイル保存 → あとはダブルクリック</p>
+
+    <section class="flow">
+      <article class="step">
+        <div class="number">1</div>
+        <div class="content">
+          <div><h2>2ファイルを保存</h2><p>CMDとPowerShellを同じフォルダへ置きます。</p></div>
+          <div class="picture"><div class="file">setup-wsl.cmd<br>setup-wsl.ps1</div></div>
+        </div>
+      </article>
+
+      <article class="step">
+        <div class="number">2</div>
+        <div class="content">
+          <div><h2>WSLのGitを使う</h2><p>Windows側にGitは必要ありません。</p></div>
+          <div class="picture"><div class="terminal">WSL → git fetch<br>最新版を取得</div></div>
+        </div>
+      </article>
+
+      <article class="step">
+        <div class="number">3</div>
+        <div class="content">
+          <div><h2>CMDをダブルクリック</h2><p>初回セットアップも今後の更新も同じ操作です。</p></div>
+          <div class="picture"><div class="file">setup-wsl.cmd</div></div>
+        </div>
+      </article>
+
+      <article class="step">
+        <div class="number">4</div>
+        <div class="content">
+          <div><h2>黒い画面を待つ</h2><p>Codex、gstack、Ralphが自動で入ります。</p></div>
+          <div class="picture"><div class="terminal">Installing Codex...<br>Installing gstack...<br>Installing Ralph...</div></div>
+        </div>
+      </article>
+
+      <article class="step done">
+        <div class="number">5</div>
+        <div class="content">
+          <div><h2>Codexへログイン</h2><p>表示された案内に従えば完了です。</p></div>
+          <div class="picture"><div class="terminal">codex login --device-auth<br><br>Everything is ready.</div></div>
+        </div>
+      </article>
+    </section>
+
+    <div class="note">
+      前提は、新しいPCに <strong>WSL2 + Ubuntu</strong> が入っていることです。<br>
+      2ファイルはWindows側の「ダウンロード」や「デスクトップ」に置いて構いません。
+    </div>
+  </main>
+</body>
+</html>

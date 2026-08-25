@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ralph Bootstrap"
+  short_description: "Create scripts/ralph scaffold for a project"
+  default_prompt: "Use $ralph-bootstrap to initialize Ralph in this project."

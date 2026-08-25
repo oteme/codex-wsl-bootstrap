@@ -1,0 +1,72 @@
+# Codex WSL Workstation Bootstrap
+
+Recreates this Codex CLI environment on another Ubuntu/WSL2 device:
+
+- Codex CLI
+- Bun
+- gstack for Codex (`gstack-*` skill names)
+- Ralph `prd` and `ralph` skills
+- Codex-native `ralph-bootstrap` and `ralph-run` skills
+- Shared Japanese/gstack/Ralph instructions in `~/.codex/AGENTS.md`
+
+## One-click setup
+
+This assumes WSL2 with Ubuntu is already installed.
+
+1. Download `setup-wsl.cmd` and `setup-wsl.ps1` once on the new Windows device.
+2. Keep both files in the same folder and double-click `setup-wsl.cmd`.
+3. If prompted, complete the Ubuntu password and Codex sign-in steps.
+
+The launcher uses Git installed inside WSL. It checks out the latest version at
+`~/.local/share/codex-wsl-bootstrap` and runs its installer. Windows Git is not required.
+
+To install directly from an Ubuntu/WSL terminal, run:
+
+```bash
+git clone https://github.com/oteme/codex-wsl-bootstrap.git \
+  ~/.local/share/codex-wsl-bootstrap
+bash ~/.local/share/codex-wsl-bootstrap/install.sh
+```
+
+The installer is safe to rerun. It preserves unrelated content in
+`~/.codex/AGENTS.md` and refuses to overwrite unmanaged skill folders or modified source
+checkouts.
+
+## Verify
+
+```bash
+./doctor.sh
+```
+
+If Codex is not signed in yet:
+
+```bash
+codex login --device-auth
+```
+
+Then restart Codex CLI so it reloads the installed skills.
+
+## Update an existing device
+
+Double-click the same `setup-wsl.cmd` again. It fetches the latest version with Git inside
+WSL and updates bootstrap-managed skills while preserving unrelated Codex configuration.
+There is no ZIP to replace or extract. Restart Codex CLI after setup completes.
+
+## Update pinned versions
+
+The default gstack and Ralph commits are pinned in `install.sh` for reproducible setup.
+You can test newer revisions without editing the file:
+
+```bash
+GSTACK_REF=<commit> RALPH_REF=<commit> ./install.sh
+```
+
+After verification, update the two default commit constants in `install.sh`.
+
+## Security boundary
+
+Authentication files, API keys, browser cookies, shell history, and existing Codex
+session data are never copied. Each device performs its own Codex login.
+
+Local `.gstack/` runtime state is excluded by `.gitignore`; do not remove that rule when
+publishing this bundle.
