@@ -78,8 +78,8 @@ else
 fi
 
 echo "Fetching Codex workstation setup: $BOOTSTRAP_REF"
-git -C "$repo" fetch --depth 1 origin "$BOOTSTRAP_REF"
-git -C "$repo" checkout --detach FETCH_HEAD
+git -C "$repo" fetch --quiet --depth 1 origin "$BOOTSTRAP_REF"
+git -C "$repo" checkout --quiet --detach FETCH_HEAD
 bash "$repo/install.sh"
 '@
 
