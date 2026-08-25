@@ -16,6 +16,9 @@ GSTACK_REF="${GSTACK_REF:-$GSTACK_REF_DEFAULT}"
 RALPH_REF="${RALPH_REF:-$RALPH_REF_DEFAULT}"
 DRY_RUN=0
 
+# Non-interactive WSL launches do not necessarily load shell profile PATH entries.
+export PATH="$HOME/.local/bin:$HOME/.codex/bin:$HOME/.bun/bin:$PATH"
+
 usage() {
   cat <<'EOF'
 Usage: ./install.sh [--dry-run]
@@ -96,7 +99,7 @@ download_and_run() {
   installer="$(mktemp)"
   trap 'rm -f "${installer:-}"' RETURN
   curl -fsSL "$url" -o "$installer"
-  bash "$installer"
+  NON_INTERACTIVE=1 bash "$installer"
   rm -f "$installer"
   trap - RETURN
   log "$label installed"
