@@ -27,6 +27,20 @@ create `tasks/prd-[feature-name].md`, then `ralph` to convert it into
 For an engineering plan workflow, a useful sequence is:
 `gstack-plan-eng-review` -> `ralph-bootstrap` -> `prd` -> `ralph` -> `ralph-run`.
 
+## Fail-close and clean-break
+
+For plans, specs, PRDs, implementations, and reviews:
+
+- State which invalid inputs or states must fail, and do not silently substitute defaults,
+  swallow errors, or add fallback/retry behavior unless the requirements explicitly call for it.
+- State whether compatibility is required. If the replaced behavior has not been released or
+  compatibility is not explicitly required, prefer a clean break and remove the obsolete path.
+- Name the code, flags, shims, migrations, tests, and documentation that must be deleted.
+- Treat new fallback paths, compatibility shims, retained legacy branches, swallowed exceptions,
+  and weakened/skipped tests as specification changes that require explicit acceptance criteria.
+- If correctness requires a product or architecture decision that is not in the requirements,
+  stop as blocked rather than inventing a compatibility or fallback policy.
+
 For detailed explanations outside of a Decision Brief / AskUserQuestion, use an HTML artifact.
 
 Explain like I'm someone who knows nothing about this topic, using an HTML artifact with big pictures and few words.

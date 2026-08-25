@@ -31,19 +31,49 @@ check_skill() {
     || fail "skill missing: $skill_name"
 }
 
+check_file() {
+  local file="$1"
+  local label="$2"
+  [[ -f "$file" ]] && pass "$label" || fail "$label missing: $file"
+}
+
+check_text() {
+  local file="$1"
+  local expected="$2"
+  local label="$3"
+  if [[ -f "$file" ]] && grep -Fq "$expected" "$file"; then
+    pass "$label"
+  else
+    fail "$label is missing"
+  fi
+}
+
 check_command codex
 check_command bun
 check_command git
+check_command python3
 
 for skill_name in gstack-plan-eng-review gstack-review prd ralph ralph-bootstrap ralph-run; do
   check_skill "$skill_name"
 done
+
+check_text "$SKILLS_DIR/prd/SKILL.md" \
+  '## Fail-close and clean-break requirements' \
+  'prd fail-close/clean-break policy'
+check_text "$SKILLS_DIR/ralph/SKILL.md" \
+  '## Preserve failure and removal semantics' \
+  'ralph fail-close/clean-break policy'
+check_file "$SKILLS_DIR/ralph-run/scripts/ralph-state.py" 'ralph state gate'
+check_file "$SKILLS_DIR/ralph-run/assets/policy-review.schema.json" 'ralph review schema'
 
 if [[ -f "$CODEX_DIR/AGENTS.md" ]] && grep -q '^<!-- BEGIN codex-workstation-bootstrap -->$' "$CODEX_DIR/AGENTS.md"; then
   pass "shared AGENTS.md guidance"
 else
   fail "shared AGENTS.md guidance is missing"
 fi
+
+check_text "$CODEX_DIR/AGENTS.md" '## Fail-close and clean-break' \
+  'shared fail-close/clean-break guidance'
 
 if [[ "$skip_login" -eq 0 ]]; then
   if command -v codex >/dev/null 2>&1 && codex login status >/dev/null 2>&1; then

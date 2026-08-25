@@ -4,10 +4,12 @@ Recreates this Codex CLI environment on another Ubuntu/WSL2 device:
 
 - Codex CLI
 - Bun
+- Python 3 (used by the Ralph state gate)
 - gstack for Codex (`gstack-*` skill names)
 - Ralph `prd` and `ralph` skills
 - Codex-native `ralph-bootstrap` and `ralph-run` skills
 - Shared Japanese/gstack/Ralph instructions in `~/.codex/AGENTS.md`
+- Fail-close/clean-break requirements in plans and PRDs, plus an independent Ralph diff gate
 
 ## One-click setup
 
@@ -33,6 +35,18 @@ bash ~/.local/share/codex-wsl-bootstrap/install.sh
 The installer is safe to rerun. It preserves unrelated content in
 `~/.codex/AGENTS.md` and refuses to overwrite unmanaged skill folders or modified source
 checkouts.
+
+## Ralph policy gate
+
+`ralph-bootstrap` generates project instructions that forbid speculative fallbacks and
+compatibility paths. The installed `prd` and `ralph` skills require explicit failure behavior,
+compatibility decisions, and deletion criteria.
+
+During `ralph-run`, workers leave each story uncommitted. A fresh read-only Codex process reviews
+the diff for swallowed failures, unrequested fallback/legacy paths, weakened tests, and unmet
+acceptance criteria. Only an approved diff is committed and allowed to count as passing. A rejected
+story returns to `passes: false` and is repaired in the next iteration. The runner also refuses to
+start if unrelated files outside `scripts/ralph` are already dirty.
 
 ## Verify
 
