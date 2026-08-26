@@ -86,6 +86,49 @@ PROJECT_ROOT="$(cd "$RALPH_DIR/../.." && pwd)"
 LOG_DIR="$RALPH_DIR/logs"
 mkdir -p "$LOG_DIR"
 
+review_temp_dir=""
+review_worktree=""
+
+cleanup_review_worktree() {
+  local cleanup_failed=0
+
+  if [[ -z "$review_worktree" && -z "$review_temp_dir" ]]; then
+    return 0
+  fi
+
+  if [[ -n "$review_worktree" ]]; then
+    if git -C "$PROJECT_ROOT" worktree remove --force "$review_worktree"; then
+      review_worktree=""
+    else
+      cleanup_failed=1
+    fi
+  fi
+  if [[ -n "$review_temp_dir" && -d "$review_temp_dir" ]]; then
+    if rmdir "$review_temp_dir"; then
+      review_temp_dir=""
+    else
+      cleanup_failed=1
+    fi
+  fi
+  if ! git -C "$PROJECT_ROOT" worktree prune; then
+    cleanup_failed=1
+  fi
+
+  return "$cleanup_failed"
+}
+
+cleanup_review_worktree_on_exit() {
+  local runner_status=$?
+  trap - EXIT
+  if ! cleanup_review_worktree; then
+    echo "error: could not remove temporary policy review worktree: $review_worktree" >&2
+    [[ "$runner_status" -ne 0 ]] || runner_status=1
+  fi
+  exit "$runner_status"
+}
+
+trap cleanup_review_worktree_on_exit EXIT
+
 case "$RALPH_DIR" in
   "$PROJECT_ROOT"/*) RALPH_REL="${RALPH_DIR#"$PROJECT_ROOT"/}" ;;
   *) echo "error: Ralph directory must be inside project root: $RALPH_DIR" >&2; exit 1 ;;
@@ -258,18 +301,47 @@ EOF
 
   review_index_tree="$(git -C "$PROJECT_ROOT" write-tree)"
 
+  if ! review_temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/ralph-review-XXXXXX")"; then
+    git -C "$PROJECT_ROOT" reset --quiet
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
+      "Could not allocate an isolated policy review directory; story was not approved."
+    echo "error: could not allocate isolated policy review directory in iteration $i" >&2
+    exit 1
+  fi
+  review_worktree="$review_temp_dir/worktree"
+  if ! git -C "$PROJECT_ROOT" worktree add --quiet --detach "$review_worktree" "$iteration_head" \
+    || ! git -C "$review_worktree" read-tree --reset -u "$review_index_tree"; then
+    review_cleanup_failed=0
+    if ! cleanup_review_worktree; then
+      review_cleanup_failed=1
+    fi
+    git -C "$PROJECT_ROOT" reset --quiet
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
+      "Could not create an isolated policy review worktree; story was not approved."
+    echo "error: could not create isolated policy review worktree in iteration $i" >&2
+    if [[ "$review_cleanup_failed" -eq 1 ]]; then
+      echo "error: temporary policy review path also could not be cleaned: $review_worktree" >&2
+    fi
+    exit 1
+  fi
+
   review_prompt=$(cat <<EOF
 You are the independent fail-close and clean-break policy reviewer for one Ralph iteration.
 
-Do not modify the repository. Inspect the complete staged snapshot using "git diff --cached HEAD" in:
-$PROJECT_ROOT
+This is a static diff review. Do not run builds, tests, linters, coverage commands, package managers,
+or any command that creates or modifies files. Judge acceptance criteria only from the staged diff.
+The implementation worker and pre-commit hook own test execution.
 
-Also run "git status --short" and reject if any implementation change is absent from the staged
-snapshot. Files under $RALPH_REL/logs are runner output and must be ignored. Do not rely on plain
-"git diff HEAD"; every newly created file must be reviewed from the cached diff.
+Inspect the complete staged snapshot using "git diff --cached HEAD" in this disposable worktree:
+$review_worktree
+
+The runner already verified that the staged snapshot is complete. Do not use the main worktree or
+plain "git diff HEAD"; every newly created file must be reviewed from the cached diff.
 
 The story under review is $STORY_ID: $STORY_TITLE. Read its acceptance criteria from:
-$RALPH_DIR/prd.json
+$review_worktree/$RALPH_REL/prd.json
 
 Ignore bookkeeping-only changes under scripts/ralph except when they alter the story specification
 or falsely mark acceptance. Reject only when the diff contains at least one of these concrete
@@ -293,7 +365,7 @@ EOF
   : > "$review_file"
   set +e
   RALPH_RUN_ACTIVE=1 codex exec \
-    --cd "$PROJECT_ROOT" \
+    --cd "$review_worktree" \
     --dangerously-bypass-approvals-and-sandbox \
     --ephemeral \
     --output-schema "$REVIEW_SCHEMA" \
@@ -301,6 +373,59 @@ EOF
     "$review_prompt" 2>&1 | tee -a "$log_file"
   review_status=${PIPESTATUS[0]}
   set -e
+
+  if ! cleanup_review_worktree; then
+    git -C "$PROJECT_ROOT" reset --quiet
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
+      "Temporary policy review worktree cleanup failed; story was not approved."
+    echo "error: could not remove temporary policy review worktree in iteration $i" >&2
+    exit 1
+  fi
+
+  post_review_head="$(git -C "$PROJECT_ROOT" rev-parse HEAD)"
+  post_review_tree="$(git -C "$PROJECT_ROOT" write-tree)"
+  post_review_staged="$(git -C "$PROJECT_ROOT" diff --cached --name-status "$review_index_tree")"
+  post_review_tracked="$(git -C "$PROJECT_ROOT" diff --name-status)"
+  post_review_untracked="$(
+    git -C "$PROJECT_ROOT" ls-files --others --exclude-standard | while IFS= read -r path; do
+      case "$path" in
+        "$RALPH_REL"/logs/*) ;;
+        *) printf '%s\n' "$path" ;;
+      esac
+    done
+  )"
+  if [[ "$post_review_head" != "$iteration_head" \
+    || "$post_review_tree" != "$review_index_tree" \
+    || -n "$post_review_staged" \
+    || -n "$post_review_tracked" \
+    || -n "$post_review_untracked" ]]; then
+    echo "error: repository changed during policy review in iteration $i" >&2
+    echo "review tree: $review_index_tree" >&2
+    if [[ "$post_review_head" != "$iteration_head" ]]; then
+      echo "HEAD moved: expected $iteration_head, found $post_review_head" >&2
+    fi
+    if [[ "$post_review_tree" != "$review_index_tree" ]]; then
+      echo "staged tree changed: expected $review_index_tree, found $post_review_tree" >&2
+    fi
+    if [[ -n "$post_review_staged" ]]; then
+      echo "staged paths changed:" >&2
+      printf '%s\n' "$post_review_staged" >&2
+    fi
+    if [[ -n "$post_review_tracked" ]]; then
+      echo "tracked worktree paths changed:" >&2
+      printf '%s\n' "$post_review_tracked" >&2
+    fi
+    if [[ -n "$post_review_untracked" ]]; then
+      echo "untracked paths appeared:" >&2
+      printf '%s\n' "$post_review_untracked" >&2
+    fi
+    git -C "$PROJECT_ROOT" reset --quiet
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
+      "Repository changed after the staged policy snapshot was created."
+    exit 1
+  fi
 
   if [[ "$review_status" -ne 0 ]]; then
     git -C "$PROJECT_ROOT" reset --quiet
@@ -320,28 +445,6 @@ EOF
       "Policy reviewer returned invalid structured output; story was not approved."
     echo "error: invalid policy review output in iteration $i" >&2
     echo "review: $review_file" >&2
-    exit 1
-  fi
-
-  post_review_head="$(git -C "$PROJECT_ROOT" rev-parse HEAD)"
-  post_review_tree="$(git -C "$PROJECT_ROOT" write-tree)"
-  post_review_untracked="$(
-    git -C "$PROJECT_ROOT" ls-files --others --exclude-standard | while IFS= read -r path; do
-      case "$path" in
-        "$RALPH_REL"/logs/*) ;;
-        *) printf '%s\n' "$path" ;;
-      esac
-    done
-  )"
-  if [[ "$post_review_head" != "$iteration_head" \
-    || "$post_review_tree" != "$review_index_tree" \
-    || -n "$post_review_untracked" ]] \
-    || ! git -C "$PROJECT_ROOT" diff --quiet; then
-    git -C "$PROJECT_ROOT" reset --quiet
-    cp "$before_prd" "$RALPH_DIR/prd.json"
-    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
-      "Repository changed after the staged policy snapshot was created."
-    echo "error: repository changed during policy review in iteration $i" >&2
     exit 1
   fi
 
