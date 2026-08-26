@@ -60,8 +60,9 @@ Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, o
 
 - The runner uses `codex exec --dangerously-bypass-approvals-and-sandbox` for both the worker and
   reviewer so an autonomous iteration and its test suite do not stall on approval prompts or fail
-  on scratch-file permissions. This is intentionally equivalent to the unattended Ralph loop.
-  Only run it in a trusted repo/worktree.
+  on scratch-file permissions. The reviewer runs in a disposable detached Git worktree populated
+  from the exact staged review tree, so reviewer-created files cannot dirty the main worktree. This
+  is intentionally equivalent to the unattended Ralph loop. Only run it in a trusted repository.
 - Iterations are serial by design. Do not parallelize them; Ralph stories depend on
   ordered updates to `prd.json` and `progress.txt`.
 - An omitted iteration limit is intentional. Do not invent a 10-iteration default and do not chain
@@ -74,8 +75,10 @@ Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, o
   runner script, launch another `codex exec`, or start another autonomous loop.
 - Workers do not commit. The runner verifies that exactly one story changed from `passes: false`
   to `passes: true`, rejects unauthorized PRD edits, and then asks a fresh Codex process to inspect
-  the diff. The reviewer is instructed not to modify the repository, and the runner rejects the
-  iteration if HEAD, the staged tree, unstaged files, or untracked files change during review.
+  the diff. The reviewer performs static diff review in a disposable worktree and must not run
+  builds, tests, linters, coverage, or package-manager commands. The runner removes that worktree
+  after review and rejects the iteration if the main HEAD, staged tree, tracked files, or untracked
+  files change during review.
 - The runner stages the complete implementation snapshot (excluding runner logs), runs any
   executable pre-commit hook, restages hook output, and records the resulting Git tree. The
   reviewer inspects that cached diff. The final commit is created from the exact approved tree, so

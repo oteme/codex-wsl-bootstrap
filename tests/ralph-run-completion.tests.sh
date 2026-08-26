@@ -5,6 +5,22 @@ RUNNER="${RUNNER:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/skills/ralph
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
+mktemp() {
+  if [[ "${MOCK_MKTEMP_FAILURE:-0}" == "1" ]]; then
+    return 70
+  fi
+  command mktemp "$@"
+}
+
+git() {
+  if [[ "${MOCK_GIT_FAILURE:-}" == "worktree-add" && "$*" == *"worktree add"* ]]; then
+    return 71
+  fi
+  command git "$@"
+}
+
+export -f mktemp git
+
 [[ "$(grep -Fc -- '--dangerously-bypass-approvals-and-sandbox' "$RUNNER")" -eq 2 ]]
 if grep -Fq -- '--sandbox read-only' "$RUNNER"; then
   echo 'reviewer must not use the read-only sandbox' >&2
@@ -13,9 +29,14 @@ fi
 
 codex() {
   local last_message=""
+  local codex_cwd=""
   local prompt="${*: -1}"
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
+      --cd)
+        codex_cwd="$2"
+        shift 2
+        ;;
       --output-last-message)
         last_message="$2"
         shift 2
@@ -28,14 +49,35 @@ codex() {
 
   if [[ "$prompt" == *"independent fail-close and clean-break policy reviewer"* ]]; then
     printf 'review\n' >> "$MOCK_CALLS_FILE"
-    if ! git diff --cached --name-only | grep -Fxq 'app.txt'; then
+    printf '%s\n' "$codex_cwd" >> "$MOCK_REVIEW_CWDS_FILE"
+    if [[ "$codex_cwd" == "$PWD" ]]; then
+      return 8
+    fi
+    if ! git -C "$codex_cwd" diff --cached --name-only | grep -Fxq 'app.txt'; then
       return 8
     fi
     if [[ "$MOCK_MODE" == "hook-mutates" ]] \
-      && ! git diff --cached --name-only | grep -Fxq 'hook-added.txt'; then
+      && ! git -C "$codex_cwd" diff --cached --name-only | grep -Fxq 'hook-added.txt'; then
       return 8
     fi
-    if [[ "$MOCK_MODE" == "review-error" ]]; then
+    if [[ "$MOCK_MODE" == "review-artifact" ]]; then
+      mkdir -p "$codex_cwd/coverage"
+      printf 'reviewer output\n' > "$codex_cwd/coverage/report.txt"
+    fi
+    if [[ "$MOCK_MODE" == "review-main-artifact" \
+      || "$MOCK_MODE" == "review-error-after-main-artifact" ]]; then
+      printf 'escaped reviewer output\n' > "$MOCK_MAIN_WORKTREE/reviewer-escaped.txt"
+    fi
+    if [[ "$MOCK_MODE" == "review-main-tracked-and-staged" ]]; then
+      printf 'escaped staged change\n' > "$MOCK_MAIN_WORKTREE/app.txt"
+      git -C "$MOCK_MAIN_WORKTREE" add app.txt
+      printf 'escaped tracked change\n' >> "$MOCK_MAIN_WORKTREE/app.txt"
+    fi
+    if [[ "$MOCK_MODE" == "review-main-head" ]]; then
+      git -C "$MOCK_MAIN_WORKTREE" commit --no-verify -qm 'escaped reviewer commit'
+    fi
+    if [[ "$MOCK_MODE" == "review-error" \
+      || "$MOCK_MODE" == "review-error-after-main-artifact" ]]; then
       return 7
     fi
     local review_count
@@ -65,7 +107,7 @@ codex() {
     if [[ "$MOCK_MODE" == "wrong-retry" && "$worker_count" -gt 1 ]]; then
       story_index=1
     fi
-    python3 - "$PWD/scripts/ralph/prd.json" "$story_index" <<'PY'
+    python3 - "$codex_cwd/scripts/ralph/prd.json" "$story_index" <<'PY'
 import json
 import sys
 
@@ -83,10 +125,10 @@ with open(path, "w", encoding="utf-8") as handle:
     json.dump(document, handle, indent=2)
     handle.write("\n")
 PY
-    printf 'implementation attempt\n' >> "$PWD/app.txt"
+    printf 'implementation attempt\n' >> "$codex_cwd/app.txt"
     if [[ "$MOCK_MODE" == "worker-commit" ]]; then
-      git add -A
-      git commit -qm 'unauthorized worker commit'
+      git -C "$codex_cwd" add -A
+      git -C "$codex_cwd" commit -qm 'unauthorized worker commit'
     fi
   fi
   if [[ "$MOCK_MODE" == "worker-error" ]]; then
@@ -154,6 +196,8 @@ PY
   git -C "$fixture_root" commit -qm 'add pending fixture stories'
 }
 export -f codex
+export MOCK_REVIEW_CWDS_FILE="$TEST_ROOT/reviewer-cwds.txt"
+: > "$MOCK_REVIEW_CWDS_FILE"
 
 make_fixture() {
   local fixture_root="$1"
@@ -212,8 +256,135 @@ grep -Fq 'completed=1' <<< "$second_output"
 grep -Fq 'iterationsRun=2' <<< "$second_output"
 grep -Fq 'You are the implementation worker for exactly one Ralph iteration.' "$MOCK_PROMPTS_FILE"
 grep -Fq 'independent fail-close and clean-break policy reviewer' "$MOCK_PROMPTS_FILE"
-grep -Fq 'Also run "git status --short"' "$MOCK_PROMPTS_FILE"
+grep -Fq 'This is a static diff review.' "$MOCK_PROMPTS_FILE"
+grep -Fq 'Do not run builds, tests, linters, coverage commands, package managers' "$MOCK_PROMPTS_FILE"
+if grep -Fq 'Also run "git status --short"' "$MOCK_PROMPTS_FILE"; then
+  echo 'reviewer prompt must not request mutable repository checks' >&2
+  exit 1
+fi
 git -C "$second_root" log -1 --format=%s | grep -Fq 'feat: US-001 - Test gate'
+
+review_artifact_root="$TEST_ROOT/review-artifact"
+make_fixture "$review_artifact_root"
+export MOCK_MODE="review-artifact"
+export MOCK_CALLS_FILE="$TEST_ROOT/review-artifact-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/review-artifact-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+review_artifact_output="$(cd "$review_artifact_root" && bash "$RUNNER" 1)"
+grep -Fq 'completed=1' <<< "$review_artifact_output"
+[[ ! -e "$review_artifact_root/coverage" ]]
+[[ -z "$(git -C "$review_artifact_root" status --porcelain)" ]]
+[[ "$(git -C "$review_artifact_root" worktree list --porcelain | grep -c '^worktree ')" -eq 1 ]]
+review_artifact_cwd="$(tail -1 "$MOCK_REVIEW_CWDS_FILE")"
+[[ "$review_artifact_cwd" != "$review_artifact_root" ]]
+[[ ! -e "$review_artifact_cwd" ]]
+
+review_escape_root="$TEST_ROOT/review-escape"
+make_fixture "$review_escape_root"
+export MOCK_MODE="review-main-artifact"
+export MOCK_MAIN_WORKTREE="$review_escape_root"
+export MOCK_CALLS_FILE="$TEST_ROOT/review-escape-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/review-escape-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+set +e
+review_escape_output="$(cd "$review_escape_root" && bash "$RUNNER" 1 2>&1)"
+review_escape_status=$?
+set -e
+[[ "$review_escape_status" -eq 1 ]]
+grep -Fq 'repository changed during policy review' <<< "$review_escape_output"
+grep -Fq 'review tree:' <<< "$review_escape_output"
+grep -Fq 'untracked paths appeared:' <<< "$review_escape_output"
+grep -Fq 'reviewer-escaped.txt' <<< "$review_escape_output"
+
+review_error_escape_root="$TEST_ROOT/review-error-escape"
+make_fixture "$review_error_escape_root"
+export MOCK_MODE="review-error-after-main-artifact"
+export MOCK_MAIN_WORKTREE="$review_error_escape_root"
+export MOCK_CALLS_FILE="$TEST_ROOT/review-error-escape-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/review-error-escape-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+set +e
+review_error_escape_output="$(cd "$review_error_escape_root" && bash "$RUNNER" 1 2>&1)"
+review_error_escape_status=$?
+set -e
+[[ "$review_error_escape_status" -eq 1 ]]
+grep -Fq 'repository changed during policy review' <<< "$review_error_escape_output"
+grep -Fq 'untracked paths appeared:' <<< "$review_error_escape_output"
+grep -Fq 'reviewer-escaped.txt' <<< "$review_error_escape_output"
+if grep -Fq 'policy review failed' <<< "$review_error_escape_output"; then
+  echo 'main-worktree mutation must take precedence over reviewer exit status' >&2
+  exit 1
+fi
+
+review_tracked_root="$TEST_ROOT/review-tracked"
+make_fixture "$review_tracked_root"
+export MOCK_MODE="review-main-tracked-and-staged"
+export MOCK_MAIN_WORKTREE="$review_tracked_root"
+export MOCK_CALLS_FILE="$TEST_ROOT/review-tracked-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/review-tracked-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+set +e
+review_tracked_output="$(cd "$review_tracked_root" && bash "$RUNNER" 1 2>&1)"
+review_tracked_status=$?
+set -e
+[[ "$review_tracked_status" -eq 1 ]]
+grep -Fq 'staged tree changed:' <<< "$review_tracked_output"
+grep -Fq 'staged paths changed:' <<< "$review_tracked_output"
+grep -Fq 'tracked worktree paths changed:' <<< "$review_tracked_output"
+[[ "$(grep -Fc 'app.txt' <<< "$review_tracked_output")" -ge 2 ]]
+
+review_head_root="$TEST_ROOT/review-head"
+make_fixture "$review_head_root"
+export MOCK_MODE="review-main-head"
+export MOCK_MAIN_WORKTREE="$review_head_root"
+export MOCK_CALLS_FILE="$TEST_ROOT/review-head-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/review-head-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+set +e
+review_head_output="$(cd "$review_head_root" && bash "$RUNNER" 1 2>&1)"
+review_head_status=$?
+set -e
+[[ "$review_head_status" -eq 1 ]]
+grep -Fq 'HEAD moved:' <<< "$review_head_output"
+[[ "$(git -C "$review_head_root" rev-list --count HEAD)" -eq 2 ]]
+
+mktemp_error_root="$TEST_ROOT/mktemp-error"
+make_fixture "$mktemp_error_root"
+export MOCK_MODE="approve"
+export MOCK_CALLS_FILE="$TEST_ROOT/mktemp-error-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/mktemp-error-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+set +e
+mktemp_error_output="$(cd "$mktemp_error_root" && MOCK_MKTEMP_FAILURE=1 bash "$RUNNER" 1 2>&1)"
+mktemp_error_status=$?
+set -e
+[[ "$mktemp_error_status" -eq 1 ]]
+grep -Fq 'could not allocate isolated policy review directory' <<< "$mktemp_error_output"
+grep -Fq 'POLICY GATE FAILED' "$mktemp_error_root/scripts/ralph/progress.txt"
+grep -Fq '"passes": false' "$mktemp_error_root/scripts/ralph/prd.json"
+
+worktree_add_error_root="$TEST_ROOT/worktree-add-error"
+make_fixture "$worktree_add_error_root"
+export MOCK_MODE="approve"
+export MOCK_CALLS_FILE="$TEST_ROOT/worktree-add-error-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/worktree-add-error-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+set +e
+worktree_add_error_output="$(cd "$worktree_add_error_root" && MOCK_GIT_FAILURE=worktree-add bash "$RUNNER" 1 2>&1)"
+worktree_add_error_status=$?
+set -e
+[[ "$worktree_add_error_status" -eq 1 ]]
+grep -Fq 'could not create isolated policy review worktree' <<< "$worktree_add_error_output"
+grep -Fq 'POLICY GATE FAILED' "$worktree_add_error_root/scripts/ralph/progress.txt"
+grep -Fq '"passes": false' "$worktree_add_error_root/scripts/ralph/prd.json"
+[[ "$(git -C "$worktree_add_error_root" worktree list --porcelain | grep -c '^worktree ')" -eq 1 ]]
 
 empty_root="$TEST_ROOT/empty"
 make_fixture "$empty_root"
@@ -341,6 +512,9 @@ set -e
 grep -Fq 'policy review failed' <<< "$review_error_output"
 grep -Fq 'POLICY GATE FAILED' "$review_error_root/scripts/ralph/progress.txt"
 grep -Fq '"passes": false' "$review_error_root/scripts/ralph/prd.json"
+review_error_cwd="$(tail -1 "$MOCK_REVIEW_CWDS_FILE")"
+[[ ! -e "$review_error_cwd" ]]
+[[ "$(git -C "$review_error_root" worktree list --porcelain | grep -c '^worktree ')" -eq 1 ]]
 
 commit_error_root="$TEST_ROOT/commit-error"
 make_fixture "$commit_error_root"
