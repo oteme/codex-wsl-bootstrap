@@ -1,0 +1,4 @@
+interface:
+  display_name: "Go Backend Rules"
+  short_description: "Go API・Clean Architecture・DB変更の実装規約"
+  default_prompt: "Use $go-backend to implement or review this Go backend change."

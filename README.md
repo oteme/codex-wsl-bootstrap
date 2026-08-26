@@ -8,6 +8,7 @@ Recreates this Codex CLI environment on another Ubuntu/WSL2 device:
 - gstack for Codex (`gstack-*` skill names)
 - Ralph `prd` and `ralph` skills
 - Codex-native `ralph-bootstrap` and `ralph-run` skills
+- A lazily loaded `go-backend` skill for Clean Architecture, HTTP API, SQL, and migration rules
 - Shared Japanese/gstack/Ralph instructions in `~/.codex/AGENTS.md`
 - Fail-close/clean-break requirements in plans and PRDs, plus an independent Ralph diff gate
 

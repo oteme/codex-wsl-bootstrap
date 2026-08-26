@@ -53,9 +53,16 @@ check_command bun
 check_command git
 check_command python3
 
-for skill_name in gstack-plan-eng-review gstack-review prd ralph ralph-bootstrap ralph-run; do
+for skill_name in gstack-plan-eng-review gstack-review go-backend prd ralph ralph-bootstrap ralph-run; do
   check_skill "$skill_name"
 done
+
+check_file "$SKILLS_DIR/go-backend/references/clean-architecture.md" \
+  'go-backend clean architecture rules'
+check_file "$SKILLS_DIR/go-backend/references/api-design.md" \
+  'go-backend API rules'
+check_file "$SKILLS_DIR/go-backend/references/database-and-migrations.md" \
+  'go-backend database rules'
 
 check_text "$SKILLS_DIR/prd/SKILL.md" \
   '## Fail-close and clean-break requirements' \
@@ -74,6 +81,8 @@ fi
 
 check_text "$CODEX_DIR/AGENTS.md" '## Fail-close and clean-break' \
   'shared fail-close/clean-break guidance'
+check_text "$CODEX_DIR/AGENTS.md" '## Go backend' \
+  'shared Go backend routing'
 
 if [[ "$skip_login" -eq 0 ]]; then
   if command -v codex >/dev/null 2>&1 && codex login status >/dev/null 2>&1; then
