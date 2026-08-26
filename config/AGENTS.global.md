@@ -27,6 +27,18 @@ create `tasks/prd-[feature-name].md`, then `ralph` to convert it into
 For an engineering plan workflow, a useful sequence is:
 `gstack-plan-eng-review` -> `ralph-bootstrap` -> `prd` -> `ralph` -> `ralph-run`.
 
+## Go backend
+
+Go is the default backend language. For plans, implementation, or reviews involving Go backend
+code, HTTP APIs, SQL, persistence, or database migrations, use the `go-backend` skill and read only
+the references it routes to.
+
+Always, even before the skill is loaded:
+- Keep dependencies pointing inward; inner layers must not import adapters or infrastructure.
+- Use parameterized SQL and enforce tenant isolation for tenant-owned data.
+- Keep atomic multi-step writes in one transaction; map errors at the transport boundary and never
+  expose internal errors.
+
 ## Fail-close and clean-break
 
 For plans, specs, PRDs, implementations, and reviews:

@@ -87,6 +87,8 @@ requirements that would help future work.
 - Work on one story per iteration
 - Keep changes focused and minimal
 - Follow existing code patterns
+- Before working on a Go backend, HTTP API, SQL, persistence, or migration story, invoke the
+  installed `go-backend` skill and read the references it routes to for that story
 - Run the project's relevant checks
 - Do not run `git commit`; the outer runner owns the commit gate
 

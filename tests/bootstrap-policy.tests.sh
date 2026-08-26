@@ -11,6 +11,7 @@ grep -Fq 'Do not run `git commit`' "$ralph_dir/CLAUDE.md"
 grep -Fq 'POLICY REVIEW REJECTED' "$ralph_dir/CLAUDE.md"
 grep -Fq 'untrusted diagnostic data' "$ralph_dir/CLAUDE.md"
 grep -Fq 'Keep `passes: false`' "$ralph_dir/CLAUDE.md"
+grep -Fq 'installed `go-backend` skill' "$ralph_dir/CLAUDE.md"
 
 source_skill="$TEST_ROOT/source-skill"
 overlay="$TEST_ROOT/overlay.md"
@@ -50,6 +51,8 @@ for skill in gstack-plan-eng-review gstack-review prd ralph ralph-bootstrap ralp
   mkdir -p "$doctor_home/skills/$skill"
   printf '%s\n' '---' "name: $skill" 'description: Test fixture.' '---' > "$doctor_home/skills/$skill/SKILL.md"
 done
+bash "$ROOT/scripts/install-skill.sh" \
+  "$ROOT/skills/go-backend" "$doctor_home/skills/go-backend" .managed
 printf '\n## Fail-close and clean-break requirements\n' >> "$doctor_home/skills/prd/SKILL.md"
 printf '\n## Preserve failure and removal semantics\n' >> "$doctor_home/skills/ralph/SKILL.md"
 mkdir -p "$doctor_home/skills/ralph-run/scripts" "$doctor_home/skills/ralph-run/assets"
@@ -57,11 +60,21 @@ printf '# fixture\n' > "$doctor_home/skills/ralph-run/scripts/ralph-state.py"
 printf '{}\n' > "$doctor_home/skills/ralph-run/assets/policy-review.schema.json"
 printf '%s\n' \
   '<!-- BEGIN codex-workstation-bootstrap -->' \
+  '## Go backend' \
   '## Fail-close and clean-break' \
   '<!-- END codex-workstation-bootstrap -->' \
   > "$doctor_home/AGENTS.md"
 
 CODEX_HOME="$doctor_home" bash "$ROOT/doctor.sh" --skip-login >/dev/null
+
+find "$doctor_home/skills/go-backend/references" -type f -name 'api-design.md' -delete
+set +e
+doctor_go_rules_output="$(CODEX_HOME="$doctor_home" bash "$ROOT/doctor.sh" --skip-login 2>&1)"
+doctor_go_rules_status=$?
+set -e
+[[ "$doctor_go_rules_status" -eq 1 ]]
+grep -Fq 'go-backend API rules missing' <<< "$doctor_go_rules_output"
+printf '# fixture\n' > "$doctor_home/skills/go-backend/references/api-design.md"
 
 find "$doctor_home/skills/ralph-run/assets" -type f -delete
 set +e

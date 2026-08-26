@@ -202,6 +202,10 @@ install_ralph() {
   install_skill "$SCRIPT_DIR/skills/ralph-run" "ralph-run"
 }
 
+install_local_skills() {
+  install_skill "$SCRIPT_DIR/skills/go-backend" "go-backend"
+}
+
 install_agents_guidance() {
   local agents_file="$CODEX_DIR/AGENTS.md"
   local guidance="$SCRIPT_DIR/config/AGENTS.global.md"
@@ -241,6 +245,7 @@ main() {
   run mkdir -p "$SKILLS_DIR"
   install_gstack
   install_ralph
+  install_local_skills
   install_agents_guidance
 
   if [[ "$DRY_RUN" -eq 0 ]]; then
