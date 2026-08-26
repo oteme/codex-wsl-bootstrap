@@ -5,6 +5,12 @@ RUNNER="${RUNNER:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/skills/ralph
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
+[[ "$(grep -Fc -- '--dangerously-bypass-approvals-and-sandbox' "$RUNNER")" -eq 2 ]]
+if grep -Fq -- '--sandbox read-only' "$RUNNER"; then
+  echo 'reviewer must not use the read-only sandbox' >&2
+  exit 1
+fi
+
 codex() {
   local last_message=""
   local prompt="${*: -1}"
@@ -55,7 +61,7 @@ codex() {
   if [[ "$MOCK_MODE" != "blocked" ]]; then
     local worker_count story_index
     worker_count="$(grep -c '^worker$' "$MOCK_CALLS_FILE")"
-    story_index=0
+    story_index=-1
     if [[ "$MOCK_MODE" == "wrong-retry" && "$worker_count" -gt 1 ]]; then
       story_index=1
     fi
@@ -67,6 +73,11 @@ path = sys.argv[1]
 story_index = int(sys.argv[2])
 with open(path, encoding="utf-8") as handle:
     document = json.load(handle)
+if story_index < 0:
+    story_index = next(
+        index for index, story in enumerate(document["userStories"])
+        if not story["passes"]
+    )
 document["userStories"][story_index]["passes"] = True
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(document, handle, indent=2)
@@ -112,6 +123,35 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
   git -C "$fixture_root" add scripts/ralph/prd.json
   git -C "$fixture_root" commit -qm 'add second fixture story'
+}
+
+add_pending_stories() {
+  local fixture_root="$1"
+  local total="$2"
+  python3 - "$fixture_root/scripts/ralph/prd.json" "$total" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+total = int(sys.argv[2])
+with open(path, encoding="utf-8") as handle:
+    document = json.load(handle)
+for number in range(2, total + 1):
+    document["userStories"].append({
+        "id": f"US-{number:03d}",
+        "title": f"Story {number}",
+        "description": "Exercise until-complete mode",
+        "acceptanceCriteria": ["Tests pass"],
+        "priority": number,
+        "passes": False,
+        "notes": "",
+    })
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(document, handle, indent=2)
+    handle.write("\n")
+PY
+  git -C "$fixture_root" add scripts/ralph/prd.json
+  git -C "$fixture_root" commit -qm 'add pending fixture stories'
 }
 export -f codex
 
@@ -337,6 +377,36 @@ hook_mutates_output="$(cd "$hook_mutates_root" && bash "$RUNNER" 1)"
 grep -Fq 'completed=1' <<< "$hook_mutates_output"
 git -C "$hook_mutates_root" show --format= --name-only HEAD | grep -Fxq 'hook-added.txt'
 [[ -z "$(git -C "$hook_mutates_root" status --porcelain)" ]]
+
+until_complete_root="$TEST_ROOT/until-complete"
+make_fixture "$until_complete_root"
+add_pending_stories "$until_complete_root" 11
+export MOCK_MODE="approve"
+export MOCK_CALLS_FILE="$TEST_ROOT/until-complete-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/until-complete-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+until_complete_output="$(cd "$until_complete_root" && bash "$RUNNER")"
+grep -Fq 'completed=1' <<< "$until_complete_output"
+grep -Fq 'iterationsRun=11' <<< "$until_complete_output"
+grep -Fq 'maxIterations=0' <<< "$until_complete_output"
+[[ "$(grep -c '^worker$' "$MOCK_CALLS_FILE")" -eq 11 ]]
+
+circuit_breaker_root="$TEST_ROOT/circuit-breaker"
+make_fixture "$circuit_breaker_root"
+export MOCK_MODE="reject-always"
+export MOCK_CALLS_FILE="$TEST_ROOT/circuit-breaker-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/circuit-breaker-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+set +e
+circuit_breaker_output="$(cd "$circuit_breaker_root" && bash "$RUNNER" 2>&1)"
+circuit_breaker_status=$?
+set -e
+[[ "$circuit_breaker_status" -eq 1 ]]
+grep -Fq 'rejected US-001 3 consecutive times' <<< "$circuit_breaker_output"
+grep -Fq 'blocked=1' <<< "$circuit_breaker_output"
+[[ "$(grep -c '^review$' "$MOCK_CALLS_FILE")" -eq 3 ]]
 
 set +e
 nested_output="$(cd "$reject_root" && RALPH_RUN_ACTIVE=1 bash "$RUNNER" 3 2>&1)"
