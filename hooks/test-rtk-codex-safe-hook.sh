@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOOK="${HOOK:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rtk-codex-safe-hook.py}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+HOOK="${HOOK:-$SCRIPT_DIR/rtk-codex-safe-hook.py}"
 [[ -z "${RTK_BIN:-}" ]] || export RTK_BIN
 
 payload() {

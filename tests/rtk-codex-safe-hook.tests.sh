@@ -20,6 +20,30 @@ chmod 0755 "$fake_rtk" "$TEST_ROOT/hook.py"
 RTK_BIN="$fake_rtk" HOOK="$TEST_ROOT/hook.py" \
   bash "$ROOT/hooks/test-rtk-codex-safe-hook.sh"
 
+real_python="$(command -v python3)"
+assert_bin="$TEST_ROOT/assert-bin"
+caller_dir="$TEST_ROOT/caller"
+mkdir -p "$assert_bin" "$caller_dir"
+cat > "$assert_bin/python3" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$PWD" == "$EXPECTED_PYTHON_CWD" ]] || {
+  echo "python3 invoked from unsafe caller cwd: $PWD" >&2
+  exit 91
+}
+exec "$REAL_PYTHON" "$@"
+EOF
+chmod 0755 "$assert_bin/python3"
+(
+  cd "$caller_dir"
+  PATH="$assert_bin:$PATH" \
+    REAL_PYTHON="$real_python" \
+    EXPECTED_PYTHON_CWD="$ROOT/hooks" \
+    RTK_BIN="$fake_rtk" \
+    HOOK="$TEST_ROOT/hook.py" \
+    bash "$ROOT/hooks/test-rtk-codex-safe-hook.sh"
+)
+
 payload() {
   python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":sys.argv[1]}}))' "$1"
 }
