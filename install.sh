@@ -5,6 +5,9 @@ readonly GSTACK_REPO="https://github.com/garrytan/gstack.git"
 readonly GSTACK_REF_DEFAULT="85fd9db554ae4aaaa6d356d2daf873121ee85bdd"
 readonly RALPH_REPO="https://github.com/snarktank/ralph.git"
 readonly RALPH_REF_DEFAULT="6c53cb0b831ebe8739c6a003e22af14902d8b0b5"
+readonly RTK_VERSION_DEFAULT="0.46.0"
+readonly RTK_X86_64_SHA256="79aa5b89c69566bbfeceb66c8a27cfbe52237fc7ee3e683115f43745a3262d21"
+readonly RTK_AARCH64_SHA256="e8c2e1787f46017ea7c5a711b2bc6a7f7cf61c7ad69385b4c1e4daff1135dcd1"
 readonly MANAGED_MARKER=".codex-workstation-bootstrap-managed"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,6 +17,7 @@ GSTACK_DIR="${GSTACK_INSTALL_DIR:-$HOME/gstack}"
 RALPH_SOURCE_DIR="${RALPH_SOURCE_DIR:-$HOME/.local/share/codex-workstation-bootstrap/ralph}"
 GSTACK_REF="${GSTACK_REF:-$GSTACK_REF_DEFAULT}"
 RALPH_REF="${RALPH_REF:-$RALPH_REF_DEFAULT}"
+RTK_VERSION="$RTK_VERSION_DEFAULT"
 DRY_RUN=0
 
 # Non-interactive WSL launches do not necessarily load shell profile PATH entries.
@@ -23,7 +27,7 @@ usage() {
   cat <<'EOF'
 Usage: ./install.sh [--dry-run]
 
-Installs Codex CLI, Bun, gstack, Ralph skills, and shared AGENTS.md guidance
+Installs Codex CLI, RTK Safe Hook, Bun, gstack, Ralph skills, and shared AGENTS.md guidance
 for an existing Ubuntu/WSL2 environment.
 
 Environment overrides:
@@ -135,6 +139,80 @@ ensure_bun() {
   }
 }
 
+ensure_rtk() {
+  local current_version=""
+  if command -v rtk >/dev/null 2>&1; then
+    current_version="$(rtk --version 2>/dev/null | awk '{print $2}')"
+  fi
+  if [[ "$current_version" == "$RTK_VERSION" ]]; then
+    log "RTK already present: rtk $current_version"
+    return
+  fi
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "Would install RTK $RTK_VERSION with checksum verification"
+    return
+  fi
+
+  local architecture asset checksum temporary_dir archive
+  architecture="$(uname -m)"
+  case "$architecture" in
+    x86_64)
+      asset="rtk-x86_64-unknown-linux-musl.tar.gz"
+      checksum="$RTK_X86_64_SHA256"
+      ;;
+    aarch64|arm64)
+      asset="rtk-aarch64-unknown-linux-gnu.tar.gz"
+      checksum="$RTK_AARCH64_SHA256"
+      ;;
+    *)
+      echo "error: unsupported RTK architecture: $architecture" >&2
+      exit 1
+      ;;
+  esac
+
+  temporary_dir="$(mktemp -d)"
+  archive="$temporary_dir/$asset"
+  cleanup_rtk_download() {
+    if [[ -n "$temporary_dir" && -d "$temporary_dir" ]]; then
+      rm -r -- "$temporary_dir"
+    fi
+  }
+  trap cleanup_rtk_download RETURN
+  log "Installing RTK $RTK_VERSION"
+  curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/v$RTK_VERSION/$asset" -o "$archive"
+  printf '%s  %s\n' "$checksum" "$archive" | sha256sum --check --status || {
+    echo "error: RTK archive checksum mismatch" >&2
+    exit 1
+  }
+  tar -xzf "$archive" -C "$temporary_dir"
+  [[ -x "$temporary_dir/rtk" ]] || {
+    echo "error: RTK archive did not contain an executable rtk binary" >&2
+    exit 1
+  }
+  run mkdir -p "$HOME/.local/bin"
+  run install -m 0755 "$temporary_dir/rtk" "$HOME/.local/bin/rtk"
+  rm -r -- "$temporary_dir"
+  trap - RETURN
+  [[ "$(rtk --version | awk '{print $2}')" == "$RTK_VERSION" ]] || {
+    echo "error: installed RTK version does not match $RTK_VERSION" >&2
+    exit 1
+  }
+}
+
+install_rtk_hook() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "+ install Codex RTK Safe Hook -> $CODEX_DIR/hooks/rtk-safe"
+    echo "+ merge managed PreToolUse entry -> $CODEX_DIR/hooks.json"
+    return
+  fi
+  python3 "$SCRIPT_DIR/scripts/install-codex-rtk-hook.py" \
+    --codex-dir "$CODEX_DIR" \
+    --hook-source "$SCRIPT_DIR/hooks/rtk-codex-safe-hook.py" \
+    --test-source "$SCRIPT_DIR/hooks/test-rtk-codex-safe-hook.sh" \
+    --rtk-version "$RTK_VERSION"
+  log "Installed Codex RTK Safe Hook"
+}
+
 checkout_repo() {
   local repo="$1"
   local ref="$2"
@@ -241,12 +319,14 @@ main() {
   ensure_base_tools
   run mkdir -p "$CODEX_DIR"
   ensure_codex
+  ensure_rtk
   ensure_bun
   run mkdir -p "$SKILLS_DIR"
   install_gstack
   install_ralph
   install_local_skills
   install_agents_guidance
+  install_rtk_hook
 
   if [[ "$DRY_RUN" -eq 0 ]]; then
     bash "$SCRIPT_DIR/doctor.sh" --skip-login
@@ -255,7 +335,7 @@ main() {
     fi
   fi
 
-  printf '\nSetup complete. Restart Codex CLI to refresh the skill list.\n'
+  printf '\nSetup complete. Restart Codex CLI, then open /hooks and trust the reviewed RTK Safe Hook.\n'
 }
 
 main
