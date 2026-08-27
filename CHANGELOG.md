@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.1.0.2] - 2026-08-27
+
+### Fixed
+
+- Made the permanent RTK Safe Hook regression test independent of the caller's working directory, preventing Windows-mounted Downloads I/O errors during WSL setup.
+
 ## [0.1.0.1] - 2026-08-27
 
 ### Fixed
