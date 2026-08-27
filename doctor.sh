@@ -102,10 +102,13 @@ if [[ -f "$rtk_hook_dir/rtk-version" ]] && command -v rtk >/dev/null 2>&1; then
 fi
 
 if [[ -x "$rtk_hook_dir/test.sh" ]]; then
-  if "$rtk_hook_dir/test.sh" >/dev/null 2>&1; then
+  if rtk_regression_output="$("$rtk_hook_dir/test.sh" 2>&1)"; then
     pass "Codex RTK Safe Hook regression"
   else
     fail "Codex RTK Safe Hook regression failed"
+    if [[ -n "$rtk_regression_output" ]]; then
+      printf '%s\n' "$rtk_regression_output" >&2
+    fi
   fi
 fi
 

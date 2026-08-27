@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.1.0.1] - 2026-08-27
+
+### Fixed
+
+- Preserved RTK Safe Hook regression output when Doctor reports a failure, so cross-device setup errors show the actionable cause.
+
 ## [0.1.0.0] - 2026-08-27
 
 ### Added
