@@ -52,6 +52,7 @@ check_command codex
 check_command bun
 check_command git
 check_command python3
+check_command rtk
 
 for skill_name in gstack-plan-eng-review gstack-review go-backend prd ralph ralph-bootstrap ralph-run; do
   check_skill "$skill_name"
@@ -83,6 +84,30 @@ check_text "$CODEX_DIR/AGENTS.md" '## Fail-close and clean-break' \
   'shared fail-close/clean-break guidance'
 check_text "$CODEX_DIR/AGENTS.md" '## Go backend' \
   'shared Go backend routing'
+
+rtk_hook_dir="$CODEX_DIR/hooks/rtk-safe"
+check_file "$rtk_hook_dir/rtk-codex-safe-hook.py" 'Codex RTK Safe Hook'
+check_file "$rtk_hook_dir/test.sh" 'Codex RTK Safe Hook regression test'
+check_file "$rtk_hook_dir/rtk-version" 'Codex RTK pinned version'
+check_text "$CODEX_DIR/hooks.json" 'rtk-codex-safe-hook.py' 'Codex RTK PreToolUse registration'
+
+if [[ -f "$rtk_hook_dir/rtk-version" ]] && command -v rtk >/dev/null 2>&1; then
+  expected_rtk_version="$(tr -d '[:space:]' < "$rtk_hook_dir/rtk-version")"
+  actual_rtk_version="$(rtk --version 2>/dev/null | awk '{print $2}')"
+  if [[ -n "$expected_rtk_version" && "$actual_rtk_version" == "$expected_rtk_version" ]]; then
+    pass "RTK pinned version: $actual_rtk_version"
+  else
+    fail "RTK version mismatch: expected $expected_rtk_version, got ${actual_rtk_version:-unknown}"
+  fi
+fi
+
+if [[ -x "$rtk_hook_dir/test.sh" ]]; then
+  if "$rtk_hook_dir/test.sh" >/dev/null 2>&1; then
+    pass "Codex RTK Safe Hook regression"
+  else
+    fail "Codex RTK Safe Hook regression failed"
+  fi
+fi
 
 if [[ "$skip_login" -eq 0 ]]; then
   if command -v codex >/dev/null 2>&1 && codex login status >/dev/null 2>&1; then

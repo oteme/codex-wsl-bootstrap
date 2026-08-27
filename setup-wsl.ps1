@@ -98,4 +98,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "Setup failed with exit code $LASTEXITCODE."
 }
 
-Write-Host "Setup complete. Restart Codex CLI to load updated skills."
+Write-Host "Setup complete. Restart Codex CLI, then open /hooks and trust the reviewed RTK Safe Hook."

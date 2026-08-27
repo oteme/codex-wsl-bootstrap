@@ -65,11 +65,29 @@ printf '%s\n' \
   '<!-- END codex-workstation-bootstrap -->' \
   > "$doctor_home/AGENTS.md"
 
-CODEX_HOME="$doctor_home" bash "$ROOT/doctor.sh" --skip-login >/dev/null
+test_bin="$TEST_ROOT/bin"
+mkdir -p "$test_bin"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'if [[ "${1:-}" == --version ]]; then printf "rtk 0.46.0\n"; exit 0; fi' \
+  '[[ "${1:-}" == hook && "${2:-}" == check ]]' \
+  '[[ "${3:-}" == "go test ./..." ]] && printf "rtk go test ./...\n" || printf "No rewrite for: %s\n" "${3:-}"' \
+  > "$test_bin/rtk"
+chmod 0755 "$test_bin/rtk"
+python3 "$ROOT/scripts/install-codex-rtk-hook.py" \
+  --codex-dir "$doctor_home" \
+  --hook-source "$ROOT/hooks/rtk-codex-safe-hook.py" \
+  --test-source "$ROOT/hooks/test-rtk-codex-safe-hook.sh" \
+  --rtk-version 0.46.0
+
+PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" CODEX_HOME="$doctor_home" \
+  bash "$ROOT/doctor.sh" --skip-login >/dev/null
 
 find "$doctor_home/skills/go-backend/references" -type f -name 'api-design.md' -delete
 set +e
-doctor_go_rules_output="$(CODEX_HOME="$doctor_home" bash "$ROOT/doctor.sh" --skip-login 2>&1)"
+doctor_go_rules_output="$(PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" \
+  CODEX_HOME="$doctor_home" bash "$ROOT/doctor.sh" --skip-login 2>&1)"
 doctor_go_rules_status=$?
 set -e
 [[ "$doctor_go_rules_status" -eq 1 ]]
@@ -78,7 +96,8 @@ printf '# fixture\n' > "$doctor_home/skills/go-backend/references/api-design.md"
 
 find "$doctor_home/skills/ralph-run/assets" -type f -delete
 set +e
-doctor_output="$(CODEX_HOME="$doctor_home" bash "$ROOT/doctor.sh" --skip-login 2>&1)"
+doctor_output="$(PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" \
+  CODEX_HOME="$doctor_home" bash "$ROOT/doctor.sh" --skip-login 2>&1)"
 doctor_status=$?
 set -e
 [[ "$doctor_status" -eq 1 ]]
@@ -87,7 +106,8 @@ grep -Fq 'ralph review schema missing' <<< "$doctor_output"
 printf '{}\n' > "$doctor_home/skills/ralph-run/assets/policy-review.schema.json"
 sed -i '/Fail-close and clean-break requirements/d' "$doctor_home/skills/prd/SKILL.md"
 set +e
-doctor_policy_output="$(CODEX_HOME="$doctor_home" bash "$ROOT/doctor.sh" --skip-login 2>&1)"
+doctor_policy_output="$(PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" \
+  CODEX_HOME="$doctor_home" bash "$ROOT/doctor.sh" --skip-login 2>&1)"
 doctor_policy_status=$?
 set -e
 [[ "$doctor_policy_status" -eq 1 ]]
