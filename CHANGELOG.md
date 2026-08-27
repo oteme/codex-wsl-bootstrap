@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.1.0.0] - 2026-08-27
+
+### Added
+
+- Installed pinned, checksum-verified RTK releases through the workstation bootstrap.
+- Added a Codex-native Safe Hook that rewrites only allowlisted simple Bash commands and fails closed on invalid hook or RTK state.
+- Added idempotent `hooks.json` merging, permanent RTK hook regression tests, and doctor checks.
+
 ## [0.0.1.0] - 2026-08-26
 
 ### Fixed
