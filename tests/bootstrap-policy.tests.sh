@@ -113,4 +113,31 @@ set -e
 [[ "$doctor_policy_status" -eq 1 ]]
 grep -Fq 'prd fail-close/clean-break policy is missing' <<< "$doctor_policy_output"
 
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'echo "RTK regression diagnostic marker" >&2' \
+  'exit 7' \
+  > "$doctor_home/hooks/rtk-safe/test.sh"
+chmod 0755 "$doctor_home/hooks/rtk-safe/test.sh"
+set +e
+doctor_rtk_output="$(PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" \
+  CODEX_HOME="$doctor_home" bash "$ROOT/doctor.sh" --skip-login 2>&1)"
+doctor_rtk_status=$?
+set -e
+[[ "$doctor_rtk_status" -eq 1 ]]
+grep -Fq 'Codex RTK Safe Hook regression failed' <<< "$doctor_rtk_output"
+grep -Fq 'RTK regression diagnostic marker' <<< "$doctor_rtk_output"
+
+printf '%s\n' '#!/usr/bin/env bash' 'exit 9' \
+  > "$doctor_home/hooks/rtk-safe/test.sh"
+chmod 0755 "$doctor_home/hooks/rtk-safe/test.sh"
+set +e
+doctor_silent_rtk_output="$(PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" \
+  CODEX_HOME="$doctor_home" bash "$ROOT/doctor.sh" --skip-login 2>&1)"
+doctor_silent_rtk_status=$?
+set -e
+[[ "$doctor_silent_rtk_status" -eq 1 ]]
+grep -Fq 'Codex RTK Safe Hook regression failed' <<< "$doctor_silent_rtk_output"
+[[ "$doctor_silent_rtk_output" != *'RTK regression diagnostic marker'* ]]
+
 printf 'PASS: bootstrap policy, skill overlays, and doctor fail-close checks.\n'
