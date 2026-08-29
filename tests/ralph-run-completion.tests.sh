@@ -265,6 +265,10 @@ if grep -Fq 'An unmet or contradicted acceptance criterion.' "$MOCK_PROMPTS_FILE
   echo 'policy reviewer prompt must not grade general acceptance criteria' >&2
   exit 1
 fi
+if grep -Fq 'falsely mark acceptance' "$MOCK_PROMPTS_FILE"; then
+  echo 'policy reviewer prompt must not retain a general acceptance backdoor' >&2
+  exit 1
+fi
 if grep -Fq 'Also run "git status --short"' "$MOCK_PROMPTS_FILE"; then
   echo 'reviewer prompt must not request mutable repository checks' >&2
   exit 1

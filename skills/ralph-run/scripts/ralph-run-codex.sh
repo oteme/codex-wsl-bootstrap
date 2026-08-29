@@ -344,9 +344,8 @@ The story under review is $STORY_ID: $STORY_TITLE. Read its acceptance criteria 
 whether fallback, compatibility, removal, or test behavior is explicitly required or allowed:
 $review_worktree/$RALPH_REL/prd.json
 
-Ignore bookkeeping-only changes under scripts/ralph except when they alter the story specification
-or falsely mark acceptance. Reject only when the diff contains at least one of these concrete
-problems:
+Ignore bookkeeping-only changes under scripts/ralph. Reject only when the diff contains at least
+one of these concrete problems:
 
 1. A newly introduced fallback, guessed default, broad retry, swallowed error, or no-op that turns
    a required failure into apparent success without explicit acceptance criteria.
