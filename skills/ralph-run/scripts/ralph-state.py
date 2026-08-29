@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-REVIEW_CATEGORIES = {"fallback", "exception", "compatibility", "legacy", "test", "acceptance"}
+REVIEW_CATEGORIES = {"fallback", "exception", "compatibility", "legacy", "test"}
 
 
 def safe_diagnostic(value: str) -> str:

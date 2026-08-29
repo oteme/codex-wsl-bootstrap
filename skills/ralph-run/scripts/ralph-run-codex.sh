@@ -330,9 +330,9 @@ EOF
   review_prompt=$(cat <<EOF
 You are the independent fail-close and clean-break policy reviewer for one Ralph iteration.
 
-This is a static diff review. Do not run builds, tests, linters, coverage commands, package managers,
-or any command that creates or modifies files. Judge acceptance criteria only from the staged diff.
-The implementation worker and pre-commit hook own test execution.
+This is a static policy diff review. Do not run builds, tests, linters, coverage commands, package
+managers, or any command that creates or modifies files. Judge only the policy violations listed
+below from the staged diff. The implementation worker and pre-commit hook own test execution.
 
 Inspect the complete staged snapshot using "git diff --cached HEAD" in this disposable worktree:
 $review_worktree
@@ -340,7 +340,8 @@ $review_worktree
 The runner already verified that the staged snapshot is complete. Do not use the main worktree or
 plain "git diff HEAD"; every newly created file must be reviewed from the cached diff.
 
-The story under review is $STORY_ID: $STORY_TITLE. Read its acceptance criteria from:
+The story under review is $STORY_ID: $STORY_TITLE. Read its acceptance criteria only to determine
+whether fallback, compatibility, removal, or test behavior is explicitly required or allowed:
 $review_worktree/$RALPH_REL/prd.json
 
 Ignore bookkeeping-only changes under scripts/ralph except when they alter the story specification
@@ -353,12 +354,13 @@ problems:
    flag that is not explicitly required by acceptance criteria.
 3. Obsolete behavior that acceptance criteria require to be removed but remains reachable.
 4. A skipped, weakened, or deleted valid test used to make checks pass.
-5. An unmet or contradicted acceptance criterion.
 
-Do not reject for style, optional refactors, or hypothetical improvements. Existing compatibility
-and fallback behavior outside the story's change is not a finding. Every finding must cite specific
-diff evidence such as a file and symbol or changed behavior. Return JSON matching the provided
-schema. Set approved=true with findings=[] only when no listed problem is present.
+Do not review general correctness or completeness. Do not reject for an acceptance criterion that
+is unrelated to the four policy checks above, style, optional refactors, or hypothetical
+improvements. Existing compatibility and fallback behavior outside the story's change is not a
+finding. Every finding must cite specific diff evidence such as a file and symbol or changed
+behavior. Return JSON matching the provided schema. Set approved=true with findings=[] only when no
+listed policy problem is present.
 EOF
 )
 

@@ -107,6 +107,14 @@ printf '%s\n' \
   '{"approved":false,"findings":[{"category":"unknown","message":"x","evidence":"y"}]}' \
   > "$approved"
 expect_failure 'invalid policy review finding values' python3 "$STATE_TOOL" review-result "$approved"
+printf '%s\n' \
+  '{"approved":false,"findings":[{"category":"acceptance","message":"general story issue","evidence":"app.py:1"}]}' \
+  > "$approved"
+expect_failure 'invalid policy review finding values' python3 "$STATE_TOOL" review-result "$approved"
+if grep -Fq '"acceptance"' "$ROOT/skills/ralph-run/assets/policy-review.schema.json"; then
+  echo 'policy review schema must not allow general acceptance findings' >&2
+  exit 1
+fi
 
 python3 - "$approved" <<'PY'
 import json, sys

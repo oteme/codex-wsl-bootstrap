@@ -84,9 +84,10 @@ Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, o
   reviewer inspects that cached diff. The final commit is created from the exact approved tree, so
   no hook or late file change can enter after review.
 - The reviewer rejects newly introduced fallback/default behavior, swallowed exceptions,
-  speculative compatibility or retained legacy paths, weakened tests, and unmet acceptance
-  criteria. Rejected work remains uncommitted and the story returns to `passes: false` for repair
-  in the next iteration.
+  speculative compatibility or retained legacy paths, and weakened tests. It reads acceptance
+  criteria only to determine whether those policy-sensitive behaviors are explicitly required or
+  allowed; it does not grade general story correctness or completeness. Rejected work remains
+  uncommitted and the story returns to `passes: false` for repair in the next iteration.
 - The runner refuses to start when files outside `scripts/ralph` are already modified or untracked,
   preventing a story commit from absorbing unrelated work.
 - A zero child exit with an empty final message is an error, not an incomplete iteration.

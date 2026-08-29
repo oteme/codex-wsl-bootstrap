@@ -66,10 +66,12 @@ compatibility decisions, and deletion criteria.
 
 During `ralph-run`, workers leave each story uncommitted. A fresh Codex process statically reviews
 the exact staged diff in a disposable detached Git worktree for swallowed failures, unrequested
-fallback/legacy paths, weakened tests, and unmet acceptance criteria. Reviewer-created files are
-discarded with that worktree. Only an approved diff is committed and allowed to count as passing.
-A rejected story returns to `passes: false` and is repaired in the next iteration. The runner also
-refuses to start if unrelated files outside `scripts/ralph` are already dirty.
+fallback/legacy paths, and weakened tests. Acceptance criteria are consulted only for explicit
+policy exceptions; the reviewer does not grade general story correctness or completeness.
+Reviewer-created files are discarded with that worktree. Only an approved diff is committed and
+allowed to count as passing. A rejected story returns to `passes: false` and is repaired in the
+next iteration. The runner also refuses to start if unrelated files outside `scripts/ralph` are
+already dirty.
 
 ## Verify
 

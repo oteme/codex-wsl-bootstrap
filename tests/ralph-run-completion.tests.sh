@@ -256,8 +256,15 @@ grep -Fq 'completed=1' <<< "$second_output"
 grep -Fq 'iterationsRun=2' <<< "$second_output"
 grep -Fq 'You are the implementation worker for exactly one Ralph iteration.' "$MOCK_PROMPTS_FILE"
 grep -Fq 'independent fail-close and clean-break policy reviewer' "$MOCK_PROMPTS_FILE"
-grep -Fq 'This is a static diff review.' "$MOCK_PROMPTS_FILE"
-grep -Fq 'Do not run builds, tests, linters, coverage commands, package managers' "$MOCK_PROMPTS_FILE"
+grep -Fq 'This is a static policy diff review.' "$MOCK_PROMPTS_FILE"
+grep -Fq 'managers, or any command that creates or modifies files.' "$MOCK_PROMPTS_FILE"
+grep -Fq 'Judge only the policy violations listed' "$MOCK_PROMPTS_FILE"
+grep -Fq 'Read its acceptance criteria only to determine' "$MOCK_PROMPTS_FILE"
+grep -Fq 'Do not review general correctness or completeness.' "$MOCK_PROMPTS_FILE"
+if grep -Fq 'An unmet or contradicted acceptance criterion.' "$MOCK_PROMPTS_FILE"; then
+  echo 'policy reviewer prompt must not grade general acceptance criteria' >&2
+  exit 1
+fi
 if grep -Fq 'Also run "git status --short"' "$MOCK_PROMPTS_FILE"; then
   echo 'reviewer prompt must not request mutable repository checks' >&2
   exit 1

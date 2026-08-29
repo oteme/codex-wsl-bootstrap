@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Ralph reviewer はいつ厳しくなった？</title>
+  <style>
+    :root { --ink:#17202a; --muted:#64748b; --paper:#f8fafc; --card:#fff; --red:#dc2626; --amber:#d97706; --green:#15803d; --blue:#2563eb; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--paper); color:var(--ink); font-family:system-ui,-apple-system,"Noto Sans JP",sans-serif; }
+    main { max-width:1050px; margin:auto; padding:48px 24px 80px; }
+    h1 { font-size:clamp(34px,6vw,68px); line-height:1.05; margin:10px 0 18px; letter-spacing:-.04em; }
+    h2 { margin:54px 0 18px; font-size:30px; }
+    p { line-height:1.75; }
+    .eyebrow { font-weight:800; color:var(--blue); letter-spacing:.14em; }
+    .lead { font-size:22px; color:#334155; max-width:850px; }
+    .verdict { margin:32px 0; padding:28px; border-radius:22px; background:#17202a; color:white; font-size:clamp(22px,4vw,38px); font-weight:800; line-height:1.35; }
+    .timeline { display:grid; gap:14px; }
+    .event { display:grid; grid-template-columns:145px 1fr; gap:18px; padding:22px; background:var(--card); border:1px solid #e2e8f0; border-radius:18px; }
+    .event time { font-weight:800; color:var(--blue); }
+    .event b { display:block; font-size:20px; margin-bottom:6px; }
+    .event p { margin:0; color:#475569; }
+    .boxes { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; }
+    .box { min-height:145px; display:grid; place-items:center; text-align:center; padding:14px; border-radius:18px; font-weight:800; background:white; border:2px solid #cbd5e1; }
+    .box.scope { border-color:var(--red); color:#991b1b; background:#fef2f2; }
+    .arrow { text-align:center; font-size:42px; color:var(--amber); margin:18px 0; }
+    .compare { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+    .panel { padding:24px; background:white; border-radius:20px; border:1px solid #e2e8f0; }
+    .panel h3 { margin-top:0; font-size:24px; }
+    .no { border-top:8px solid var(--red); }
+    .yes { border-top:8px solid var(--green); }
+    code { background:#e2e8f0; padding:.15em .4em; border-radius:6px; }
+    ul { line-height:1.8; padding-left:1.2em; }
+    .foot { margin-top:46px; color:var(--muted); font-size:14px; }
+    @media (max-width:760px) { .boxes { grid-template-columns:1fr; } .compare { grid-template-columns:1fr; } .event { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">GIT HISTORY REVIEW · 2026-08-29</div>
+  <h1>元案は policy 専用。<br>実装初版で広がった</h1>
+  <p class="lead">会話上の元案は fail-close / clean-break 系の4項目だけでした。ところが最初の実装パッチで、一般的な「受け入れ条件の未達」が5番として追加されました。その後のコミットで広がったのではありません。</p>
+
+  <div class="verdict">記憶どおり、元は fail-close 系だけ<br>ズレたのは最初の実装時</div>
+
+  <h2>元案4項目 → 実装初版5項目</h2>
+  <div class="boxes">
+    <div class="box">勝手な<br>fallback</div>
+    <div class="box">例外の<br>握り潰し</div>
+    <div class="box">互換・legacy<br>経路</div>
+    <div class="box">テストを<br>弱める</div>
+    <div class="box scope">受け入れ条件を<br>満たさない</div>
+  </div>
+  <p>白い4項目は元の相談文にあった policy review の範囲です。赤い5番だけが実装時の追加で、ほぼ普通の実装レビューとして使える大きな入口です。</p>
+
+  <h2>「受け入れ条件」の二つの使い方</h2>
+  <div class="compare">
+    <section class="panel yes">
+      <h3>元案での使い方</h3>
+      <p><b>例外の許可証</b></p>
+      <p>fallback や互換処理が、明示的に要求されているかだけを見る。</p>
+    </section>
+    <section class="panel no">
+      <h3>実装で増えた使い方</h3>
+      <p><b>story 全体の採点表</b></p>
+      <p>どんな受け入れ条件でも未達なら reviewer が拒否する。</p>
+    </section>
+  </div>
+
+  <h2>コミット時系列</h2>
+  <section class="timeline">
+    <div class="event"><time>8/25 19:25</time><div><b><code>e140631</code> reviewer なし</b><p>worker が実装し、自分で完了を宣言する単純な Ralph。</p></div></div>
+    <div class="event"><time>8/25 20:26</time><div><b><code>99de800</code> reviewer 誕生</b><p>5つの拒否理由、PRD への failure / compatibility 必須化、正確な Git tree の承認ゲートを一度に導入。</p></div></div>
+    <div class="event"><time>8/25 20:35</time><div><b><code>e6e47b8</code> PR マージ版</b><p><code>99de800</code> と同じ tree。厳しさを追加した別変更ではありません。</p></div></div>
+    <div class="event"><time>8/26 14:14</time><div><b><code>9cc536a</code> 体感が変わる</b><p>既定10 iteration で終了から、完了または blocked まで継続へ。同じ story の拒否を修理して再審査。3連続拒否で停止。</p></div></div>
+    <div class="event"><time>8/26 21:22</time><div><b><code>c56d1c8</code> reviewer を狭める</b><p>使い捨て worktree に隔離。build / test / lint / coverage を禁止し、静的 diff review に限定。</p></div></div>
+  </section>
+
+  <h2>実装初版より後に何が変わったか</h2>
+  <div class="compare">
+    <section class="panel no">
+      <h3>判定範囲は増えていない</h3>
+      <ul>
+        <li>拒否カテゴリ</li>
+        <li>fallback 判定</li>
+        <li>compatibility 判定</li>
+        <li>acceptance 判定</li>
+      </ul>
+    </section>
+    <section class="panel yes">
+      <h3>体感は強くなった</h3>
+      <ul>
+        <li>完了まで自動継続</li>
+        <li>拒否 story を再審査</li>
+        <li>3回拒否で明示的 blocked</li>
+        <li>PRD から reviewer まで同じ方針を伝播</li>
+      </ul>
+    </section>
+  </div>
+
+  <div class="arrow">↓</div>
+  <div class="verdict">元案 → 実装初版で肥大化<br>実装初版 → 現在は判定範囲そのまま</div>
+
+  <h2>会話履歴で分かった「なぜ」</h2>
+  <section class="timeline">
+    <div class="event"><time>最初の相談</time><div><b>問題は fallback と legacy 温存</b><p>Codex がエラー原因を直さず fallback で包むこと、未公開機能へ不要な後方互換性を足すことを止めたかった。</p></div></div>
+    <div class="event"><time>もらった助言</time><div><b>注意書きではなく合格条件へ</b><p>PRD に失敗条件と削除対象を書き、commit 前に fallback・例外握り潰し・互換 shim・test 弱体化を検査する案だった。</p></div></div>
+    <div class="event"><time>設計レビュー</time><div><b>本来は LLM 単独で止めない方針</b><p>会話中の回答は「LLMレビューは第二層」「LLM単独では原則ブロックしない」と明記していた。</p></div></div>
+    <div class="event"><time>実装</time><div><b>二つの責任を一つに混ぜた</b><p>fail-close / clean-break の違反検出と、story 全体の完成確認を同じ reviewer に担当させ、5番「未達の受け入れ条件」を追加した。</p></div></div>
+    <div class="event"><time>確認なし</time><div><b>5番は個別に合意されていない</b><p>「つづけて」の後、実装方針の進捗報告だけでパッチへ入った。一般 reviewer 化を選ぶ decision gate はなかった。</p></div></div>
+  </section>
+
+  <h2>設計上の取り違え</h2>
+  <div class="compare">
+    <section class="panel yes">
+      <h3>欲しかったゲート</h3>
+      <ul>
+        <li>勝手な fallback を拒否</li>
+        <li>勝手な互換 shim を拒否</li>
+        <li>旧経路の温存を拒否</li>
+        <li>テスト弱体化を拒否</li>
+      </ul>
+    </section>
+    <section class="panel no">
+      <h3>混ざった別の責任</h3>
+      <ul>
+        <li>story 全体の完成判定</li>
+        <li>全 acceptance criteria の意味判断</li>
+        <li>LLM reviewer の承認を必須化</li>
+        <li>不承認なら commit を禁止</li>
+      </ul>
+    </section>
+  </div>
+
+  <div class="verdict">原因は「厳格化の追加要求」ではない<br>合格ゲートと一般レビューの責任混同</div>
+
+  <h2>結論</h2>
+  <p class="lead">記憶は合っています。作った目的は、勝手な fallback・互換処理・legacy 温存を止める独立ゲートでした。ただし実装時に「story が本当に完成したか」まで同じ reviewer へ持たせ、一般レビュー化しました。元の狙いへ戻すなら、導入時から残る reviewer prompt の5番を外し、4番を policy 違反として残すか別の決定的テストへ移すのが境界です。</p>
+
+  <p class="foot">根拠: <code>git log --follow</code>、<code>git blame -L 330,361</code>、各コミットの比較、2026-08-25 のローカル Codex セッション。相談は 19:41 の rollout、実装は 19:55 の rollout。5番は最初の実装パッチ（ordinal 107）から存在し、個別の選択確認はない。現在の拒否5項目はすべて <code>e6e47b8</code>（元の同一 tree は <code>99de800</code>）由来。</p>
+</main>
+</body>
+</html>
