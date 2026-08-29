@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.1.1.0] - 2026-08-29
+
+### Changed
+
+- Restored Ralph's independent reviewer to its original fail-close and clean-break policy scope, so unrelated acceptance criteria no longer block otherwise valid iterations.
+- Limited policy findings to fallback and swallowed-error behavior, compatibility or retained legacy paths, required removals, and weakened tests.
+
+### Removed
+
+- Removed the catch-all acceptance finding category and its general story-completeness review path.
+
+### Added
+
+- Documented why the reviewer became broader during its initial implementation and added regression coverage that keeps the policy-only boundary intact.
+
 ## [0.1.0.2] - 2026-08-27
 
 ### Fixed
