@@ -99,6 +99,14 @@ The bootstrap keeps its pinned gstack checkout under
 `~/.local/share/codex-workstation-bootstrap/gstack`. A separate `~/gstack` checkout is left
 untouched, including the generated `gstack-*` skill-name patches that gstack may keep there.
 
+To relocate both bootstrap-managed source checkouts, set the shared state directory:
+
+```bash
+BOOTSTRAP_STATE_DIR=/path/to/bootstrap-state ./install.sh
+```
+
+`GSTACK_INSTALL_DIR` and `RALPH_SOURCE_DIR` still override their individual checkout locations.
+
 ## Update pinned versions
 
 The default gstack and Ralph commits and the RTK release/checksums are pinned in `install.sh`
