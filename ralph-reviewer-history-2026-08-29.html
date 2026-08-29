@@ -135,9 +135,9 @@
   <div class="verdict">原因は「厳格化の追加要求」ではない<br>合格ゲートと一般レビューの責任混同</div>
 
   <h2>結論</h2>
-  <p class="lead">記憶は合っています。作った目的は、勝手な fallback・互換処理・legacy 温存を止める独立ゲートでした。ただし実装時に「story が本当に完成したか」まで同じ reviewer へ持たせ、一般レビュー化しました。元の狙いへ戻すなら、導入時から残る reviewer prompt の5番を外し、4番を policy 違反として残すか別の決定的テストへ移すのが境界です。</p>
+  <p class="lead">記憶は合っています。作った目的は、勝手な fallback・互換処理・legacy 温存を止める独立ゲートでした。ただし実装時に「story が本当に完成したか」まで同じ reviewer へ持たせ、一般レビュー化しました。2026-08-29 の修正で5番と <code>acceptance</code> categoryを削除し、reviewer は元の4つの policy 違反だけを見る境界へ戻しました。</p>
 
-  <p class="foot">根拠: <code>git log --follow</code>、<code>git blame -L 330,361</code>、各コミットの比較、2026-08-25 のローカル Codex セッション。相談は 19:41 の rollout、実装は 19:55 の rollout。5番は最初の実装パッチ（ordinal 107）から存在し、個別の選択確認はない。現在の拒否5項目はすべて <code>e6e47b8</code>（元の同一 tree は <code>99de800</code>）由来。</p>
+  <p class="foot">根拠: <code>git log --follow</code>、<code>git blame -L 330,361</code>、各コミットの比較、2026-08-25 のローカル Codex セッション。相談は 19:41 の rollout、実装は 19:55 の rollout。修正前の拒否5項目はすべて <code>e6e47b8</code>（元の同一 tree は <code>99de800</code>）由来で、5番は個別の選択確認なしに追加されていた。</p>
 </main>
 </body>
 </html>
