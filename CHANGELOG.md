@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.1.2.0] - 2026-08-29
+
+### Fixed
+
+- Kept bootstrap's pinned gstack checkout separate from a user's `~/gstack`, so generated skill-name changes no longer block setup reruns.
+- Preserved explicit gstack and Ralph checkout overrides while sharing a dedicated bootstrap state directory by default.
+
+### Added
+
+- Added regression coverage proving a dirty legacy `~/gstack` remains untouched and all checkout-path overrides retain precedence.
+
 ## [0.1.1.0] - 2026-08-29
 
 ### Changed
