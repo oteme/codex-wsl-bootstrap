@@ -95,6 +95,10 @@ fetches the latest version with Git inside WSL and updates bootstrap-managed ski
 preserving unrelated Codex configuration. There is no ZIP to replace or extract. Restart
 Codex CLI after setup completes.
 
+The bootstrap keeps its pinned gstack checkout under
+`~/.local/share/codex-workstation-bootstrap/gstack`. A separate `~/gstack` checkout is left
+untouched, including the generated `gstack-*` skill-name patches that gstack may keep there.
+
 ## Update pinned versions
 
 The default gstack and Ralph commits and the RTK release/checksums are pinned in `install.sh`

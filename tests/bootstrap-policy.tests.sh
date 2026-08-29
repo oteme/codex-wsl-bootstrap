@@ -5,6 +5,47 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
+legacy_home="$TEST_ROOT/legacy-home"
+mkdir -p "$legacy_home/.codex" "$legacy_home/gstack"
+legacy_bin="$TEST_ROOT/legacy-bin"
+mkdir -p "$legacy_bin"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "codex-cli 0.0.0-test\\n"' > "$legacy_bin/codex"
+chmod 0755 "$legacy_bin/codex"
+git -C "$legacy_home/gstack" init -q
+git -C "$legacy_home/gstack" remote add origin https://github.com/garrytan/gstack.git
+printf 'generated name patch\n' > "$legacy_home/gstack/SKILL.md"
+git -C "$legacy_home/gstack" add SKILL.md
+git -C "$legacy_home/gstack" \
+  -c user.name='Bootstrap Test' -c user.email='bootstrap@example.invalid' \
+  commit -qm 'fixture'
+printf 'locally patched name\n' > "$legacy_home/gstack/SKILL.md"
+
+gstack_dry_run_output="$(
+  HOME="$legacy_home" CODEX_HOME="$legacy_home/.codex" PATH="$legacy_bin:$PATH" \
+    bash "$ROOT/install.sh" --dry-run
+)"
+grep -Fq "$legacy_home/.local/share/codex-workstation-bootstrap/gstack" \
+  <<< "$gstack_dry_run_output"
+grep -Fq "$legacy_home/.local/share/codex-workstation-bootstrap/ralph" \
+  <<< "$gstack_dry_run_output"
+[[ "$(git -C "$legacy_home/gstack" status --short)" == ' M SKILL.md' ]]
+
+custom_state="$TEST_ROOT/custom-state"
+custom_gstack="$TEST_ROOT/custom-gstack"
+custom_ralph="$TEST_ROOT/custom-ralph"
+override_dry_run_output="$(
+  HOME="$legacy_home" CODEX_HOME="$legacy_home/.codex" PATH="$legacy_bin:$PATH" \
+    BOOTSTRAP_STATE_DIR="$custom_state" GSTACK_INSTALL_DIR="$custom_gstack" \
+    RALPH_SOURCE_DIR="$custom_ralph" bash "$ROOT/install.sh" --dry-run
+)"
+grep -Fq "$custom_gstack" <<< "$override_dry_run_output"
+grep -Fq "$custom_ralph" <<< "$override_dry_run_output"
+if grep -Fq "$custom_state/gstack" <<< "$override_dry_run_output" || \
+   grep -Fq "$custom_state/ralph" <<< "$override_dry_run_output"; then
+  echo 'explicit source checkout override was ignored' >&2
+  exit 1
+fi
+
 ralph_dir="$TEST_ROOT/project/scripts/ralph"
 bash "$ROOT/skills/ralph-bootstrap/scripts/bootstrap-ralph.sh" "$ralph_dir" >/dev/null
 grep -Fq 'Do not run `git commit`' "$ralph_dir/CLAUDE.md"

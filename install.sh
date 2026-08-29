@@ -13,8 +13,9 @@ readonly MANAGED_MARKER=".codex-workstation-bootstrap-managed"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 SKILLS_DIR="$CODEX_DIR/skills"
-GSTACK_DIR="${GSTACK_INSTALL_DIR:-$HOME/gstack}"
-RALPH_SOURCE_DIR="${RALPH_SOURCE_DIR:-$HOME/.local/share/codex-workstation-bootstrap/ralph}"
+BOOTSTRAP_STATE_DIR="${BOOTSTRAP_STATE_DIR:-$HOME/.local/share/codex-workstation-bootstrap}"
+GSTACK_DIR="${GSTACK_INSTALL_DIR:-$BOOTSTRAP_STATE_DIR/gstack}"
+RALPH_SOURCE_DIR="${RALPH_SOURCE_DIR:-$BOOTSTRAP_STATE_DIR/ralph}"
 GSTACK_REF="${GSTACK_REF:-$GSTACK_REF_DEFAULT}"
 RALPH_REF="${RALPH_REF:-$RALPH_REF_DEFAULT}"
 RTK_VERSION="$RTK_VERSION_DEFAULT"
@@ -32,7 +33,9 @@ for an existing Ubuntu/WSL2 environment.
 
 Environment overrides:
   CODEX_HOME          Codex data directory (default: ~/.codex)
-  GSTACK_INSTALL_DIR  gstack checkout (default: ~/gstack)
+  BOOTSTRAP_STATE_DIR Bootstrap-managed source checkouts
+                      (default: ~/.local/share/codex-workstation-bootstrap)
+  GSTACK_INSTALL_DIR  gstack checkout (default: <bootstrap state>/gstack)
   GSTACK_REF          gstack git ref/commit
   RALPH_SOURCE_DIR    Ralph source checkout
   RALPH_REF           Ralph git ref/commit
