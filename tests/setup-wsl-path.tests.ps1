@@ -4,18 +4,21 @@ $projectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Pa
 $setupScript = Join-Path $projectRoot "setup-wsl.ps1"
 $cmdLauncher = Join-Path $projectRoot "setup-wsl.cmd"
 $inputPath = "C:\Users\reisu\My Folder\codex-wsl-bootstrap"
+$codexAppHome = "C:\Users\reisu\.codex"
 $expected = "WSL_ROOT=/mnt/c/Users/reisu/My Folder/codex-wsl-bootstrap"
+$expectedCodexAppHome = "CODEX_APP_HOME_WSL=/mnt/c/Users/reisu/.codex"
 
-$result = & $setupScript -DryRun -SourcePath $inputPath
+$result = @(& $setupScript -DryRun -SourcePath $inputPath -CodexAppHome $codexAppHome)
 
-if ($result -ne $expected) {
-    throw "Unexpected conversion result. Expected '$expected', got '$result'."
+if (($result -join "`n") -ne (@($expected, $expectedCodexAppHome) -join "`n")) {
+    throw "Unexpected conversion result: $($result -join ', ')"
 }
 
-$remoteResult = @(& $setupScript -DryRun)
+$remoteResult = @(& $setupScript -DryRun -CodexAppHome $codexAppHome)
 $expectedRemote = @(
     "WSL_GIT_REPOSITORY=https://github.com/oteme/codex-wsl-bootstrap.git",
-    "WSL_GIT_REF=main"
+    "WSL_GIT_REF=main",
+    $expectedCodexAppHome
 )
 
 if (($remoteResult -join "`n") -ne ($expectedRemote -join "`n")) {

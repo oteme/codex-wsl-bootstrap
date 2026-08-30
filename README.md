@@ -11,6 +11,7 @@ Recreates this Codex CLI environment on another Ubuntu/WSL2 device:
 - Codex-native `ralph-bootstrap` and `ralph-run` skills
 - A lazily loaded `go-backend` skill for Clean Architecture, HTTP API, SQL, and migration rules
 - Shared Japanese/gstack/Ralph instructions in `~/.codex/AGENTS.md`
+- The same instructions and skills in the Windows Codex App when it is installed
 - Fail-close/clean-break requirements in plans and PRDs, plus an independent Ralph diff gate
 
 ## RTK Safe Hook
@@ -44,7 +45,9 @@ This assumes WSL2 with Ubuntu is already installed.
 
 The CMD downloads the latest PowerShell launcher, which then uses Git installed inside WSL.
 It checks out the latest version at `~/.local/share/codex-wsl-bootstrap` and runs its
-installer. Windows Git is not required.
+installer. Windows Git is not required. When the Windows Codex App package is present, the
+launcher also registers the bootstrap-managed guidance and skills in
+`C:\Users\<user>\.codex`, which is the App's `CODEX_HOME` even when agents execute in WSL.
 
 To install directly from an Ubuntu/WSL terminal, run:
 
@@ -85,15 +88,34 @@ If Codex is not signed in yet:
 codex login --device-auth
 ```
 
-Then restart Codex CLI so it reloads the installed skills. Open `/hooks` and trust the reviewed
-RTK Safe Hook definition; the bootstrap intentionally does not bypass Codex hook trust.
+Then restart Codex CLI and Codex App so they reload the installed skills. Open `/hooks` in each
+and trust the reviewed RTK Safe Hook definition; the bootstrap intentionally does not bypass
+Codex hook trust.
 
 ## Update an existing device
 
 Double-click the same `setup-wsl.cmd` again. The CMD refreshes its PowerShell launcher, then
 fetches the latest version with Git inside WSL and updates bootstrap-managed skills while
 preserving unrelated Codex configuration. There is no ZIP to replace or extract. Restart
-Codex CLI after setup completes.
+Codex CLI and Codex App after setup completes.
+
+## Codex App and WSL
+
+Windows and WSL have different home directories. Installing only from a WSL terminal writes
+to `/home/<user>/.codex`; the Windows App normally uses `C:\Users\<user>\.codex` while its
+agent process runs inside WSL. The one-click Windows launcher detects the installed App and
+updates both locations. App-specific configuration, authentication, sessions, and built-in
+plugins remain separate; only bootstrap-managed guidance and skills are installed in both.
+
+Direct WSL installs cannot reliably detect whether the Windows App package is installed. To
+target it explicitly, pass its Windows profile directory as a WSL path:
+
+```bash
+CODEX_APP_HOME=/mnt/c/Users/<user>/.codex ./install.sh
+```
+
+Invalid App paths and unmanaged skill collisions fail closed. The installer does not add a
+Windows-native fallback: App sharing requires its WSL execution mode.
 
 The bootstrap keeps its pinned gstack checkout under
 `~/.local/share/codex-workstation-bootstrap/gstack`. A separate `~/gstack` checkout is left

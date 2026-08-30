@@ -1,6 +1,7 @@
 param(
     [switch]$DryRun,
     [string]$SourcePath,
+    [string]$CodexAppHome,
     [string]$Repository = "https://github.com/oteme/codex-wsl-bootstrap.git",
     [string]$Ref = "main"
 )
@@ -30,10 +31,51 @@ function ConvertTo-WslPath {
     return $convertedPath
 }
 
+function Resolve-CodexAppHome {
+    if ($CodexAppHome) {
+        return $CodexAppHome
+    }
+
+    $codexPackage = Get-AppxPackage -Name "OpenAI.Codex" -ErrorAction SilentlyContinue
+    if (-not $codexPackage) {
+        return $null
+    }
+
+    return (Join-Path $env:USERPROFILE ".codex")
+}
+
+function Assert-CodexAppUsesWsl {
+    param([Parameter(Mandatory = $true)][string]$AppHome)
+
+    if ($DryRun) {
+        return
+    }
+
+    $configPath = Join-Path $AppHome "config.toml"
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        throw "Codex App is installed, but '$configPath' does not exist. Open the App, enable WSL agent execution, then rerun setup."
+    }
+
+    $configContent = [System.IO.File]::ReadAllText($configPath)
+    if ($configContent -notmatch '(?m)^\s*runCodexInWindowsSubsystemForLinux\s*=\s*true\s*(?:#.*)?$') {
+        throw "Codex App must use WSL agent execution. Enable it in the App, then rerun setup."
+    }
+}
+
+$windowsCodexAppHome = Resolve-CodexAppHome
+$wslCodexAppHome = $null
+if ($windowsCodexAppHome) {
+    Assert-CodexAppUsesWsl -AppHome $windowsCodexAppHome
+    $wslCodexAppHome = ConvertTo-WslPath -WindowsPath $windowsCodexAppHome
+}
+
 if ($SourcePath) {
     $wslRoot = ConvertTo-WslPath -WindowsPath $SourcePath
     if ($DryRun) {
         Write-Output "WSL_ROOT=$wslRoot"
+        if ($wslCodexAppHome) {
+            Write-Output "CODEX_APP_HOME_WSL=$wslCodexAppHome"
+        }
         exit 0
     }
 
@@ -43,11 +85,19 @@ if ($SourcePath) {
     if ($LASTEXITCODE -ne 0) {
         throw "install.sh was not found at '$wslInstallScript'."
     }
-    wsl.exe bash $wslInstallScript
+    if ($wslCodexAppHome) {
+        wsl.exe env "CODEX_APP_HOME=$wslCodexAppHome" bash $wslInstallScript
+    } else {
+        Write-Host "Codex App was not detected; skipping its local bootstrap environment."
+        wsl.exe bash $wslInstallScript
+    }
 } else {
     if ($DryRun) {
         Write-Output "WSL_GIT_REPOSITORY=$Repository"
         Write-Output "WSL_GIT_REF=$Ref"
+        if ($wslCodexAppHome) {
+            Write-Output "CODEX_APP_HOME_WSL=$wslCodexAppHome"
+        }
         exit 0
     }
 
@@ -88,7 +138,12 @@ bash "$repo/install.sh"
         $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($temporaryScript, $wslUpdater, $utf8WithoutBom)
         $wslUpdaterPath = ConvertTo-WslPath -WindowsPath $temporaryScript
-        wsl.exe env "BOOTSTRAP_REPOSITORY=$Repository" "BOOTSTRAP_REF=$Ref" bash $wslUpdaterPath
+        if ($wslCodexAppHome) {
+            wsl.exe env "BOOTSTRAP_REPOSITORY=$Repository" "BOOTSTRAP_REF=$Ref" "CODEX_APP_HOME=$wslCodexAppHome" bash $wslUpdaterPath
+        } else {
+            Write-Host "Codex App was not detected; skipping its local bootstrap environment."
+            wsl.exe env "BOOTSTRAP_REPOSITORY=$Repository" "BOOTSTRAP_REF=$Ref" bash $wslUpdaterPath
+        }
     } finally {
         Remove-Item -Force -ErrorAction SilentlyContinue $temporaryScript
     }
@@ -98,4 +153,4 @@ if ($LASTEXITCODE -ne 0) {
     throw "Setup failed with exit code $LASTEXITCODE."
 }
 
-Write-Host "Setup complete. Restart Codex CLI, then open /hooks and trust the reviewed RTK Safe Hook."
+Write-Host "Setup complete. Restart Codex CLI and Codex App, then open /hooks in each and trust the reviewed RTK Safe Hook."
