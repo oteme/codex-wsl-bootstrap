@@ -271,29 +271,53 @@ install_skill() {
 read_top_level_model() {
   local config_file="$1"
   [[ -f "$config_file" ]] || return 0
-  awk '
-    /^\[/ { exit }
-    /^[[:space:]]*model[[:space:]]*=/ {
-      value=$0
-      sub(/^[^=]*=[[:space:]]*/, "", value)
-      if (value ~ /^["'\'']/) {
-        quote=substr(value, 1, 1)
-        value=substr(value, 2)
-        end=index(value, quote)
-        if (end > 0) value=substr(value, 1, end - 1)
-      } else {
-        sub(/[[:space:]]+#.*/, "", value)
-        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-      }
-      print value
-      exit
-    }
-  ' "$config_file"
+  python3 - "$config_file" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+with open(path, "rb") as config:
+    raw = config.read()
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    # Ubuntu 22.04 ships Python 3.10. This fallback recognizes the complete
+    # top-level string form Codex uses, including quoted keys and indented
+    # table headers, without mistaking a nested model for the root setting.
+    text = raw.decode("utf-8")
+    key = re.compile(r'''^(?:model|"model"|'model')\s*=\s*(["'])(.*?)\1(?:\s*#.*)?$''')
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            break
+        match = key.match(stripped)
+        if match:
+            print(match.group(2))
+            break
+else:
+    data = tomllib.loads(raw.decode("utf-8"))
+    model = data.get("model")
+    if model is not None:
+        if not isinstance(model, str):
+            raise SystemExit("error: top-level Codex model must be a TOML string")
+        print(model)
+PY
+}
+
+resolve_cli_model() {
+  local configured_model
+  configured_model="$(read_top_level_model "$CODEX_DIR/config.toml")"
+  printf '%s\n' "${configured_model:-gpt}"
+}
+
+prepare_sources() {
+  checkout_repo "$GSTACK_REPO" "$GSTACK_REF" "$GSTACK_DIR" "gstack"
+  checkout_repo "$RALPH_REPO" "$RALPH_REF" "$RALPH_SOURCE_DIR" "Ralph"
 }
 
 install_gstack() {
   local target_codex_dir="${1:-$CODEX_DIR}"
-  checkout_repo "$GSTACK_REPO" "$GSTACK_REF" "$GSTACK_DIR" "gstack"
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "+ (cd $GSTACK_DIR && CODEX_HOME=$target_codex_dir ./setup --host codex --prefix)"
     return
@@ -302,8 +326,8 @@ install_gstack() {
   local setup_args=(--host codex --prefix)
   local cli_model=""
   if [[ "$target_codex_dir" != "$CODEX_DIR" ]]; then
-    cli_model="$(read_top_level_model "$CODEX_DIR/config.toml")"
-    [[ -n "$cli_model" ]] && setup_args+=(--model "$cli_model")
+    cli_model="$(resolve_cli_model)"
+    setup_args+=(--model "$cli_model")
   fi
   (cd "$GSTACK_DIR" && CODEX_HOME="$target_codex_dir" ./setup "${setup_args[@]}")
 }
@@ -311,7 +335,6 @@ install_gstack() {
 install_ralph() {
   local target_codex_dir="${1:-$CODEX_DIR}"
   local target_skills_dir="$target_codex_dir/skills"
-  checkout_repo "$RALPH_REPO" "$RALPH_REF" "$RALPH_SOURCE_DIR" "Ralph"
   run mkdir -p "$target_skills_dir"
   install_skill "$RALPH_SOURCE_DIR/skills/prd" "prd" "$target_skills_dir" "$SCRIPT_DIR/config/prd-fail-close-clean-break.md"
   install_skill "$RALPH_SOURCE_DIR/skills/ralph" "ralph" "$target_skills_dir" "$SCRIPT_DIR/config/ralph-fail-close-clean-break.md"
@@ -400,6 +423,62 @@ validate_app_gstack_target() {
   exit 1
 }
 
+validate_app_managed_skill_target() {
+  local target_codex_dir="$1"
+  local skill_name="$2"
+  local target="$target_codex_dir/skills/$skill_name"
+  [[ -e "$target" || -L "$target" ]] || return 0
+  [[ ! -L "$target" && -f "$target/$MANAGED_MARKER" ]] && return 0
+
+  echo "error: refusing to overwrite an unmanaged App skill: $target" >&2
+  exit 1
+}
+
+validate_app_gstack_skill_targets() {
+  local target_codex_dir="$1"
+  local source target skill_name
+  [[ "$DRY_RUN" -eq 0 ]] || return 0
+
+  for source in "$GSTACK_DIR"/.agents/skills/gstack*/; do
+    [[ -f "$source/SKILL.md" ]] || continue
+    skill_name="$(basename "$source")"
+    [[ "$skill_name" != "gstack" ]] || continue
+    target="$target_codex_dir/skills/$skill_name"
+    [[ -e "$target" || -L "$target" ]] || continue
+    if [[ -L "$target" ]] && \
+      [[ "$(realpath -m "$target")" == "$(realpath -m "$source")" ]]; then
+      continue
+    fi
+    echo "error: refusing to retain an unmanaged App gstack skill: $target" >&2
+    exit 1
+  done
+}
+
+validate_app_install_targets() {
+  local target_codex_dir="$1"
+  local skill_name
+  if [[ -L "$target_codex_dir/skills" ]]; then
+    echo "error: refusing to use symlinked App skills directory: $target_codex_dir/skills" >&2
+    exit 1
+  fi
+  validate_app_gstack_target "$target_codex_dir"
+  validate_app_gstack_skill_targets "$target_codex_dir"
+  for skill_name in prd ralph ralph-bootstrap ralph-run go-backend; do
+    validate_app_managed_skill_target "$target_codex_dir" "$skill_name"
+  done
+  if [[ -e "$target_codex_dir/AGENTS.md" && ! -f "$target_codex_dir/AGENTS.md" ]] || \
+    [[ -L "$target_codex_dir/AGENTS.md" ]]; then
+    echo "error: refusing to replace non-regular AGENTS.md: $target_codex_dir/AGENTS.md" >&2
+    exit 1
+  fi
+  python3 "$SCRIPT_DIR/scripts/install-codex-rtk-hook.py" \
+    --codex-dir "$target_codex_dir" \
+    --hook-source "$SCRIPT_DIR/hooks/rtk-codex-safe-hook.py" \
+    --test-source "$SCRIPT_DIR/hooks/test-rtk-codex-safe-hook.sh" \
+    --rtk-version "$RTK_VERSION" \
+    --check-only
+}
+
 install_codex_app_environment() {
   [[ -n "$CODEX_APP_DIR" ]] || {
     if [[ -n "${CODEX_APP_HOME:-}" ]]; then
@@ -434,13 +513,19 @@ prepare_codex_app_environment() {
     echo "error: Codex App must use WSL agent execution; enable it in the App, then rerun" >&2
     exit 1
   fi
-  validate_app_gstack_target "$CODEX_APP_DIR"
+}
+
+preflight_codex_app_environment() {
+  [[ -n "$CODEX_APP_DIR" ]] || return 0
+  validate_app_install_targets "$CODEX_APP_DIR"
 }
 
 main() {
   ensure_ubuntu_wsl
   prepare_codex_app_environment
   ensure_base_tools
+  prepare_sources
+  preflight_codex_app_environment
   run mkdir -p "$CODEX_DIR"
   ensure_codex
   ensure_rtk

@@ -26,6 +26,14 @@ printf 'model = "gpt-comment-model" # keep this model\n' > "$model_config"
 [[ "$(read_top_level_model "$model_config")" == "gpt-comment-model" ]]
 printf '[desktop]\nmodel = "nested-only"\n' > "$model_config"
 [[ -z "$(read_top_level_model "$model_config")" ]]
+printf '  [desktop]\nmodel = "indented-nested-only"\n' > "$model_config"
+[[ -z "$(read_top_level_model "$model_config")" ]]
+[[ "$(resolve_cli_model)" == "gpt" ]]
+printf '"model" = "gpt-quoted-key"\n' > "$model_config"
+[[ "$(read_top_level_model "$model_config")" == "gpt-quoted-key" ]]
+[[ "$(resolve_cli_model)" == "gpt-quoted-key" ]]
+printf 'model = "gpt-explicit-model"\n' > "$model_config"
+[[ "$(resolve_cli_model)" == "gpt-explicit-model" ]]
 
 valid_app_home="/mnt/c/Users/bootstrap-test/.codex"
 [[ "$(validate_codex_app_home "$valid_app_home")" == "$valid_app_home" ]]
@@ -59,12 +67,47 @@ mkdir -p "$app_fixture/skills/gstack"
 printf 'user-owned\n' > "$app_fixture/skills/gstack/SKILL.md"
 printf '[desktop]\nrunCodexInWindowsSubsystemForLinux = true\n' > "$app_fixture/config.toml"
 set +e
-unmanaged_gstack_output="$(CODEX_APP_HOME="$valid_app_home" prepare_codex_app_environment 2>&1)"
+unmanaged_gstack_output="$(CODEX_APP_HOME="$valid_app_home" prepare_codex_app_environment; preflight_codex_app_environment 2>&1)"
 unmanaged_gstack_status=$?
 set -e
 [[ "$unmanaged_gstack_status" -eq 1 ]]
 grep -Fq 'refusing to overwrite an unmanaged App gstack directory' <<< "$unmanaged_gstack_output"
 touch "$app_fixture/skills/gstack/$MANAGED_MARKER"
+
+mkdir -p "$app_fixture/skills/prd"
+printf 'user-owned\n' > "$app_fixture/skills/prd/SKILL.md"
+set +e
+unmanaged_skill_output="$(CODEX_APP_HOME="$valid_app_home" prepare_codex_app_environment; preflight_codex_app_environment 2>&1)"
+unmanaged_skill_status=$?
+set -e
+[[ "$unmanaged_skill_status" -eq 1 ]]
+grep -Fq 'refusing to overwrite an unmanaged App skill' <<< "$unmanaged_skill_output"
+rm -rf "$app_fixture/skills/prd"
+
+generated_source="$GSTACK_DIR/.agents/skills/gstack-review"
+mkdir -p "$generated_source" "$app_fixture/skills/gstack-review"
+printf 'generated\n' > "$generated_source/SKILL.md"
+printf 'user-owned\n' > "$app_fixture/skills/gstack-review/SKILL.md"
+set +e
+unmanaged_generated_output="$(CODEX_APP_HOME="$valid_app_home" prepare_codex_app_environment; preflight_codex_app_environment 2>&1)"
+unmanaged_generated_status=$?
+set -e
+[[ "$unmanaged_generated_status" -eq 1 ]]
+grep -Fq 'refusing to retain an unmanaged App gstack skill' <<< "$unmanaged_generated_output"
+rm -rf "$app_fixture/skills/gstack-review"
+ln -s "$generated_source" "$app_fixture/skills/gstack-review"
+CODEX_APP_HOME="$valid_app_home" prepare_codex_app_environment
+preflight_codex_app_environment
+rm "$app_fixture/skills/gstack-review"
+
+mkdir -p "$app_fixture/hooks/rtk-safe"
+set +e
+unmanaged_hook_output="$(CODEX_APP_HOME="$valid_app_home" prepare_codex_app_environment; preflight_codex_app_environment 2>&1)"
+unmanaged_hook_status=$?
+set -e
+[[ "$unmanaged_hook_status" -eq 1 ]]
+grep -Fq 'refusing to overwrite unmanaged hook directory' <<< "$unmanaged_hook_output"
+rm -rf "$app_fixture/hooks"
 
 printf '[desktop]\nrunCodexInWindowsSubsystemForLinux = false\n' > "$app_fixture/config.toml"
 set +e
