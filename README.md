@@ -88,6 +88,12 @@ If Codex is not signed in yet:
 codex login --device-auth
 ```
 
+To verify both Codex homes again later, pass the App home to Doctor explicitly:
+
+```bash
+CODEX_APP_HOME=/mnt/c/Users/<user>/.codex ./doctor.sh
+```
+
 Then restart Codex CLI and Codex App so they reload the installed skills. Open `/hooks` in each
 and trust the reviewed RTK Safe Hook definition; the bootstrap intentionally does not bypass
 Codex hook trust.
@@ -106,6 +112,14 @@ to `/home/<user>/.codex`; the Windows App normally uses `C:\Users\<user>\.codex`
 agent process runs inside WSL. The one-click Windows launcher detects the installed App and
 updates both locations. App-specific configuration, authentication, sessions, and built-in
 plugins remain separate; only bootstrap-managed guidance and skills are installed in both.
+
+If you run the PowerShell launcher directly and need to override App detection, pass the Windows
+profile path explicitly:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup-wsl.ps1 `
+  -CodexAppHome 'C:\Users\<user>\.codex'
+```
 
 Direct WSL installs cannot reliably detect whether the Windows App package is installed. To
 target it explicitly, pass its Windows profile directory as a WSL path:
