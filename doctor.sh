@@ -26,9 +26,73 @@ check_command() {
 
 check_skill() {
   local skill_name="$1"
-  [[ -f "$SKILLS_DIR/$skill_name/SKILL.md" ]] \
-    && pass "skill: $skill_name" \
-    || fail "skill missing: $skill_name"
+  local skills_dir="${2:-$SKILLS_DIR}"
+  local label="${3:-}"
+  [[ -f "$skills_dir/$skill_name/SKILL.md" ]] \
+    && pass "${label}skill: $skill_name" \
+    || fail "${label}skill missing: $skill_name"
+}
+
+check_codex_home() {
+  local codex_dir="$1"
+  local label="$2"
+  local skills_dir="$codex_dir/skills"
+
+  for skill_name in gstack-plan-eng-review gstack-review go-backend prd ralph ralph-bootstrap ralph-run; do
+    check_skill "$skill_name" "$skills_dir" "$label"
+  done
+
+  if [[ -f "$codex_dir/AGENTS.md" ]] && grep -q '^<!-- BEGIN codex-workstation-bootstrap -->$' "$codex_dir/AGENTS.md"; then
+    pass "${label}shared AGENTS.md guidance"
+  else
+    fail "${label}shared AGENTS.md guidance is missing"
+  fi
+
+  check_file "$skills_dir/go-backend/references/clean-architecture.md" \
+    "${label}go-backend clean architecture rules"
+  check_file "$skills_dir/go-backend/references/api-design.md" \
+    "${label}go-backend API rules"
+  check_file "$skills_dir/go-backend/references/database-and-migrations.md" \
+    "${label}go-backend database rules"
+  check_text "$skills_dir/prd/SKILL.md" \
+    '## Fail-close and clean-break requirements' \
+    "${label}prd fail-close/clean-break policy"
+  check_text "$skills_dir/ralph/SKILL.md" \
+    '## Preserve failure and removal semantics' \
+    "${label}ralph fail-close/clean-break policy"
+  check_file "$skills_dir/ralph-run/scripts/ralph-state.py" "${label}ralph state gate"
+  check_file "$skills_dir/ralph-run/assets/policy-review.schema.json" "${label}ralph review schema"
+  check_text "$codex_dir/AGENTS.md" '## Fail-close and clean-break' \
+    "${label}shared fail-close/clean-break guidance"
+  check_text "$codex_dir/AGENTS.md" '## Go backend' \
+    "${label}shared Go backend routing"
+
+  local rtk_hook_dir="$codex_dir/hooks/rtk-safe"
+  check_file "$rtk_hook_dir/rtk-codex-safe-hook.py" "${label}Codex RTK Safe Hook"
+  check_file "$rtk_hook_dir/test.sh" "${label}Codex RTK Safe Hook regression test"
+  check_file "$rtk_hook_dir/rtk-version" "${label}Codex RTK pinned version"
+  check_text "$codex_dir/hooks.json" 'rtk-codex-safe-hook.py' "${label}Codex RTK PreToolUse registration"
+
+  if [[ -f "$rtk_hook_dir/rtk-version" ]] && command -v rtk >/dev/null 2>&1; then
+    local expected_rtk_version actual_rtk_version
+    expected_rtk_version="$(tr -d '[:space:]' < "$rtk_hook_dir/rtk-version")"
+    actual_rtk_version="$(rtk --version 2>/dev/null | awk '{print $2}')"
+    if [[ -n "$expected_rtk_version" && "$actual_rtk_version" == "$expected_rtk_version" ]]; then
+      pass "${label}RTK pinned version: $actual_rtk_version"
+    else
+      fail "${label}RTK version mismatch: expected $expected_rtk_version, got ${actual_rtk_version:-unknown}"
+    fi
+  fi
+
+  if [[ -x "$rtk_hook_dir/test.sh" ]]; then
+    local rtk_regression_output
+    if rtk_regression_output="$("$rtk_hook_dir/test.sh" 2>&1)"; then
+      pass "${label}Codex RTK Safe Hook regression"
+    else
+      fail "${label}Codex RTK Safe Hook regression failed"
+      [[ -n "$rtk_regression_output" ]] && printf '%s\n' "$rtk_regression_output" >&2
+    fi
+  fi
 }
 
 check_file() {
@@ -54,62 +118,10 @@ check_command git
 check_command python3
 check_command rtk
 
-for skill_name in gstack-plan-eng-review gstack-review go-backend prd ralph ralph-bootstrap ralph-run; do
-  check_skill "$skill_name"
-done
+check_codex_home "$CODEX_DIR" "CLI "
 
-check_file "$SKILLS_DIR/go-backend/references/clean-architecture.md" \
-  'go-backend clean architecture rules'
-check_file "$SKILLS_DIR/go-backend/references/api-design.md" \
-  'go-backend API rules'
-check_file "$SKILLS_DIR/go-backend/references/database-and-migrations.md" \
-  'go-backend database rules'
-
-check_text "$SKILLS_DIR/prd/SKILL.md" \
-  '## Fail-close and clean-break requirements' \
-  'prd fail-close/clean-break policy'
-check_text "$SKILLS_DIR/ralph/SKILL.md" \
-  '## Preserve failure and removal semantics' \
-  'ralph fail-close/clean-break policy'
-check_file "$SKILLS_DIR/ralph-run/scripts/ralph-state.py" 'ralph state gate'
-check_file "$SKILLS_DIR/ralph-run/assets/policy-review.schema.json" 'ralph review schema'
-
-if [[ -f "$CODEX_DIR/AGENTS.md" ]] && grep -q '^<!-- BEGIN codex-workstation-bootstrap -->$' "$CODEX_DIR/AGENTS.md"; then
-  pass "shared AGENTS.md guidance"
-else
-  fail "shared AGENTS.md guidance is missing"
-fi
-
-check_text "$CODEX_DIR/AGENTS.md" '## Fail-close and clean-break' \
-  'shared fail-close/clean-break guidance'
-check_text "$CODEX_DIR/AGENTS.md" '## Go backend' \
-  'shared Go backend routing'
-
-rtk_hook_dir="$CODEX_DIR/hooks/rtk-safe"
-check_file "$rtk_hook_dir/rtk-codex-safe-hook.py" 'Codex RTK Safe Hook'
-check_file "$rtk_hook_dir/test.sh" 'Codex RTK Safe Hook regression test'
-check_file "$rtk_hook_dir/rtk-version" 'Codex RTK pinned version'
-check_text "$CODEX_DIR/hooks.json" 'rtk-codex-safe-hook.py' 'Codex RTK PreToolUse registration'
-
-if [[ -f "$rtk_hook_dir/rtk-version" ]] && command -v rtk >/dev/null 2>&1; then
-  expected_rtk_version="$(tr -d '[:space:]' < "$rtk_hook_dir/rtk-version")"
-  actual_rtk_version="$(rtk --version 2>/dev/null | awk '{print $2}')"
-  if [[ -n "$expected_rtk_version" && "$actual_rtk_version" == "$expected_rtk_version" ]]; then
-    pass "RTK pinned version: $actual_rtk_version"
-  else
-    fail "RTK version mismatch: expected $expected_rtk_version, got ${actual_rtk_version:-unknown}"
-  fi
-fi
-
-if [[ -x "$rtk_hook_dir/test.sh" ]]; then
-  if rtk_regression_output="$("$rtk_hook_dir/test.sh" 2>&1)"; then
-    pass "Codex RTK Safe Hook regression"
-  else
-    fail "Codex RTK Safe Hook regression failed"
-    if [[ -n "$rtk_regression_output" ]]; then
-      printf '%s\n' "$rtk_regression_output" >&2
-    fi
-  fi
+if [[ -n "${CODEX_APP_HOME:-}" ]] && [[ "$(realpath -m "$CODEX_APP_HOME")" != "$(realpath -m "$CODEX_DIR")" ]]; then
+  check_codex_home "$(realpath -m "$CODEX_APP_HOME")" "App "
 fi
 
 if [[ "$skip_login" -eq 0 ]]; then

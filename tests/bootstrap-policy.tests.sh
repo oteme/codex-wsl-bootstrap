@@ -125,6 +125,24 @@ python3 "$ROOT/scripts/install-codex-rtk-hook.py" \
 PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" CODEX_HOME="$doctor_home" \
   bash "$ROOT/doctor.sh" --skip-login >/dev/null
 
+doctor_app_home="$TEST_ROOT/doctor-app-codex"
+cp -a "$doctor_home" "$doctor_app_home"
+PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" CODEX_HOME="$doctor_home" \
+  CODEX_APP_HOME="$doctor_app_home" bash "$ROOT/doctor.sh" --skip-login >/dev/null
+
+find "$doctor_app_home/skills/go-backend/references" -type f -name 'api-design.md' -delete
+set +e
+doctor_app_output="$(PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" \
+  CODEX_HOME="$doctor_home" CODEX_APP_HOME="$doctor_app_home" \
+  bash "$ROOT/doctor.sh" --skip-login 2>&1)"
+doctor_app_status=$?
+set -e
+[[ "$doctor_app_status" -eq 1 ]]
+grep -Fq 'App go-backend API rules missing' <<< "$doctor_app_output"
+
+PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" CODEX_HOME="$doctor_home" \
+  CODEX_APP_HOME="$doctor_home" bash "$ROOT/doctor.sh" --skip-login >/dev/null
+
 find "$doctor_home/skills/go-backend/references" -type f -name 'api-design.md' -delete
 set +e
 doctor_go_rules_output="$(PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" \

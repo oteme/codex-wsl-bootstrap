@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.0.0] - 2026-08-31
+
+### Added
+
+- Enabled the Windows Codex App to receive the same bootstrap-managed skills, shared guidance, and RTK Safe Hook as Codex CLI when agents run in WSL.
+- Added automatic App detection to the Windows launcher and an explicit `CODEX_APP_HOME` path for direct WSL installs.
+- Added regression coverage for App home validation, model reuse, dual-home doctor checks, and launcher behavior.
+
+### Changed
+
+- Kept App-specific configuration, authentication, sessions, and plugins separate while reusing the CLI model profile for generated App skills.
+- Required the App's WSL execution mode and a Windows user `.codex` path, failing closed before either Codex home is modified when the setup is invalid.
+
 ## [0.1.2.0] - 2026-08-29
 
 ### Fixed

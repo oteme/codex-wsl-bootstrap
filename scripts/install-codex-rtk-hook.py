@@ -87,6 +87,7 @@ def main() -> int:
     parser.add_argument("--hook-source", required=True, type=Path)
     parser.add_argument("--test-source", required=True, type=Path)
     parser.add_argument("--rtk-version", required=True)
+    parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
 
     for source in (args.hook_source, args.test_source):
@@ -95,10 +96,20 @@ def main() -> int:
 
     managed_dir = args.codex_dir / "hooks" / "rtk-safe"
     marker = managed_dir / MARKER
-    if managed_dir.exists() and not marker.is_file():
+    if (args.codex_dir / "hooks").is_symlink():
+        raise SystemExit(f"error: refusing to use symlinked hooks directory: {args.codex_dir / 'hooks'}")
+    if managed_dir.is_symlink() or (managed_dir.exists() and not marker.is_file()):
         raise SystemExit(f"error: refusing to overwrite unmanaged hook directory: {managed_dir}")
     hooks_path = args.codex_dir / "hooks.json"
+    if hooks_path.is_symlink():
+        raise SystemExit(f"error: refusing to replace symlinked hooks file: {hooks_path}")
     data = load_hooks(hooks_path)
+    hooks = data["hooks"]
+    assert isinstance(hooks, dict)
+    groups = remove_managed_handler(hooks.get("PreToolUse", []))
+    if args.check_only:
+        return 0
+
     managed_dir.mkdir(parents=True, exist_ok=True)
 
     hook_destination = managed_dir / HOOK_NAME
@@ -108,9 +119,6 @@ def main() -> int:
     marker.write_text("managed by codex-workstation-bootstrap\n", encoding="utf-8")
     (managed_dir / "rtk-version").write_text(args.rtk_version + "\n", encoding="utf-8")
 
-    hooks = data["hooks"]
-    assert isinstance(hooks, dict)
-    groups = remove_managed_handler(hooks.get("PreToolUse", []))
     command = f"/usr/bin/python3 {shlex.quote(str(hook_destination))}"
     groups.append(
         {
