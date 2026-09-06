@@ -40,15 +40,13 @@ if ! [[ "$MAX_CONSECUTIVE_REJECTIONS" =~ ^[0-9]+$ ]] \
   exit 2
 fi
 
-if ! command -v codex >/dev/null 2>&1; then
-  echo "error: codex command not found on PATH" >&2
-  exit 127
-fi
-
 if ! command -v python3 >/dev/null 2>&1; then
   echo "error: python3 command not found on PATH" >&2
   exit 127
 fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CODEX_BIN="$(python3 "$SCRIPT_DIR/ralph_runtime.py")"
 
 if [[ ! -d "$RALPH_DIR_INPUT" ]]; then
   echo "error: Ralph directory not found: $RALPH_DIR_INPUT" >&2
@@ -134,7 +132,6 @@ case "$RALPH_DIR" in
   *) echo "error: Ralph directory must be inside project root: $RALPH_DIR" >&2; exit 1 ;;
 esac
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_TOOL="$SCRIPT_DIR/ralph-state.py"
 REVIEW_SCHEMA="$SCRIPT_DIR/../assets/policy-review.schema.json"
 
@@ -219,7 +216,7 @@ EOF
   : > "$last_message"
 
   set +e
-  RALPH_RUN_ACTIVE=1 codex exec \
+  RALPH_RUN_ACTIVE=1 "$CODEX_BIN" exec \
     --cd "$PROJECT_ROOT" \
     --dangerously-bypass-approvals-and-sandbox \
     --output-last-message "$last_message" \
@@ -377,7 +374,7 @@ EOF
 
   : > "$review_file"
   set +e
-  RALPH_RUN_ACTIVE=1 codex exec \
+  RALPH_RUN_ACTIVE=1 "$CODEX_BIN" exec \
     --cd "$review_worktree" \
     --dangerously-bypass-approvals-and-sandbox \
     --ephemeral \

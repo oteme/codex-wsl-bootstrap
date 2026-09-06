@@ -30,6 +30,10 @@ class NotifyTests(unittest.TestCase):
         (self.ralph / 'CLAUDE.md').write_text('fixture')
         self.script = self.bin / SOURCE.name
         shutil.copyfile(SOURCE, self.script)
+        shutil.copyfile(SOURCE.with_name('ralph_runtime.py'), self.bin / 'ralph_runtime.py')
+        (self.bin / 'codex-runtime.json').write_text(json.dumps({
+            'schema': 1, 'codex': str(self.bin / 'codex'), 'setup_version': 'fixture',
+        }))
         codex = self.bin / 'codex'
         codex.write_text('''#!/usr/bin/env python3
 import json, os, sys
@@ -100,6 +104,21 @@ sys.exit(int(os.environ.get('QUEUE_FAIL', '0')))
         self.assertNotIn('PRIVATE_WORKER_LOG', result.stdout)
         self.assertIn('PRIVATE_WORKER_LOG', Path(state['log']).read_text())
 
+    def test_invalid_runtime_refuses_before_start(self):
+        record = self.bin / 'codex-runtime.json'
+        for content in (None, '{}', '[]', '{broken',
+                        json.dumps({'schema': 1, 'codex': 'codex'}),
+                        json.dumps({'schema': 1, 'codex': str(self.root / 'missing')})):
+            with self.subTest(content=content):
+                if content is None:
+                    record.unlink()
+                else:
+                    record.write_text(content)
+                result = self.launch()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.ralph / 'logs/runs').exists())
+                self.assertFalse((self.root / 'queue.jsonl').exists())
+
     def test_terminal_states(self):
         for mode, expected in [('blocked', 'blocked'), ('limit', 'limit_reached'),
                                ('failure', 'failed'), ('invalid', 'failed')]:
@@ -131,6 +150,7 @@ sys.exit(int(os.environ.get('QUEUE_FAIL', '0')))
         codex.write_text('''#!/usr/bin/env python3
 import json, os, pathlib, subprocess, sys
 args = sys.argv[1:]
+assert os.environ['CODEX_HOME'] == os.environ['EXPECTED_CODEX_HOME']
 if args == ['queue', '--help']:
     print('--thread')
     sys.exit(0)
@@ -158,11 +178,20 @@ else:
     (root / 'app.txt').write_text('implementation')
     output.write_text('worker finished')
 ''')
+        # Reproduce the desktop app PATH: an incompatible CLI shadows the setup CLI.
+        shadow = self.root / 'old-bin'
+        shadow.mkdir()
+        (shadow / 'codex').write_text('#!/bin/sh\nexit 99\n')
+        (shadow / 'codex').chmod(0o755)
+        self.env['PATH'] = str(shadow) + os.pathsep + self.env['PATH']
+        self.env['CODEX_HOME'] = str(self.root / 'windows-app-home')
+        self.env['EXPECTED_CODEX_HOME'] = self.env['CODEX_HOME']
         try:
             result = self.launch()
             self.assertEqual(result.returncode, 0, result.stderr)
             state = self.wait(json.loads(result.stdout))
             self.assertEqual(state['status'], 'completed', Path(state['log']).read_text())
+            self.assertEqual(state['codex'], str(codex))
             self.assertEqual(state['exit_code'], 0)
             self.assertEqual(state['iterations_run'], 1)
             calls = (self.root / 'queue.jsonl').read_text().splitlines()

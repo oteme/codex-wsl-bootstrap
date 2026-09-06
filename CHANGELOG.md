@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.2.0] - 2026-09-07
+
+### Fixed
+
+- Made Ralph's worker, reviewer and completion notification use the absolute Codex CLI path recorded by setup, preventing desktop app PATH ordering from selecting an older CLI.
+- Fail before work when the installed runtime record or executable is unavailable; preserve the initiating app's CODEX_HOME and configured model.
+- Added regressions for a shadowing incompatible CLI, both installed skill homes, reinstall, invalid records and failed CLI version probes.
+
 ## [0.2.1.0] - 2026-09-07
 
 ### Fixed
