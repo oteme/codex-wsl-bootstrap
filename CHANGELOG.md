@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.1.0] - 2026-09-07
+
+### Fixed
+
+- Replaced Ralph's parent-model polling with a detached supervisor that queues one terminal result to the initiating Codex thread.
+- Kept worker and reviewer output in log files, preserved independent review and exact-tree commit gates, and added repository-wide protection against duplicate runners.
+- Prevented worker/reviewer background processes from retaining the runner lock after completion.
+
+### Added
+
+- Added durable run results, separate notification-failure reporting, interruption handling, and process-identity checks for lost supervision.
+- Added notification process and runner integration regressions, plus Linux and Windows CI checks.
+- Recorded the required setup route in repository and distributed AGENTS guidance: merge changes first, then use Downloads/setup-wsl.cmd; do not directly copy or install skills.
+
+### Changed
+
+- Documented verified WSL CLI and Windows App queue/resume behavior and the limits of notification delivery.
+
 ## [0.2.0.0] - 2026-08-31
 
 ### Added

@@ -1,6 +1,15 @@
 <!-- BEGIN codex-workstation-bootstrap -->
 Please provide all answers in Japanese
 
+## Workstation setup updates
+
+When applying changes from `codex-wsl-bootstrap`, create and merge the PR first, then run
+the Windows `Downloads/setup-wsl.cmd` launcher (on this workstation:
+`/mnt/c/Users/reisu/Downloads/setup-wsl.cmd`). Do not copy skills into either Codex home
+or invoke `install.sh` / `scripts/install-skill.sh` directly to apply changes. The launcher's
+own internal installer calls are allowed. Do not bypass setup failures with direct installs
+or by discarding local changes. Isolated regression-test fixtures are not workstation installs.
+
 ## gstack
 
 gstack is installed for Codex CLI under `~/.codex/skills`.

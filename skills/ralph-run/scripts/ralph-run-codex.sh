@@ -82,7 +82,7 @@ if [[ ! -f "$PROGRESS_FILE" ]]; then
   echo "pre-run: created $PROGRESS_FILE"
 fi
 
-PROJECT_ROOT="$(cd "$RALPH_DIR/../.." && pwd)"
+PROJECT_ROOT="$(git -C "$RALPH_DIR" rev-parse --show-toplevel)"
 LOG_DIR="$RALPH_DIR/logs"
 mkdir -p "$LOG_DIR"
 
@@ -148,13 +148,25 @@ if [[ ! -f "$STATE_TOOL" || ! -f "$REVIEW_SCHEMA" ]]; then
   exit 1
 fi
 
+# All entrypoints share one repository lock, including direct runner invocations.
+if ! command -v flock >/dev/null 2>&1; then
+  echo "error: flock command not found on PATH" >&2
+  exit 127
+fi
+runner_git_dir="$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir)"
+exec 9> "$runner_git_dir/ralph-run.lock"
+if ! flock -n 9; then
+  echo "error: another Ralph runner is already active in this repository" >&2
+  exit 1
+fi
+
 # prd.json/progress.txt are commonly created immediately before the first run. Permit bootstrap
 # metadata there, but never absorb unrelated application changes into a Ralph story commit.
 outside_changes="$(
   git -C "$PROJECT_ROOT" status --porcelain=v1 --untracked-files=all | while IFS= read -r line; do
     path="${line:3}"
     case "$path" in
-      scripts/ralph/*) ;;
+      "$RALPH_REL"/*) ;;
       *) printf '%s\n' "$line" ;;
     esac
   done
@@ -211,8 +223,8 @@ EOF
     --cd "$PROJECT_ROOT" \
     --dangerously-bypass-approvals-and-sandbox \
     --output-last-message "$last_message" \
-    "$prompt" 2>&1 | tee "$log_file"
-  status=${PIPESTATUS[0]}
+    "$prompt" > "$log_file" 2>&1 9>&-
+  status=$?
   set -e
 
   if [[ "$status" -ne 0 ]]; then
@@ -266,7 +278,7 @@ EOF
   pre_commit_hook="$(git -C "$PROJECT_ROOT" rev-parse --git-path hooks/pre-commit)"
   if [[ -x "$pre_commit_hook" ]]; then
     set +e
-    (cd "$PROJECT_ROOT" && "$pre_commit_hook")
+    (cd "$PROJECT_ROOT" && "$pre_commit_hook") 9>&-
     hook_status=$?
     set -e
     if [[ "$hook_status" -ne 0 ]]; then
@@ -371,8 +383,8 @@ EOF
     --ephemeral \
     --output-schema "$REVIEW_SCHEMA" \
     --output-last-message "$review_file" \
-    "$review_prompt" 2>&1 | tee -a "$log_file"
-  review_status=${PIPESTATUS[0]}
+    "$review_prompt" >> "$log_file" 2>&1 9>&-
+  review_status=$?
   set -e
 
   if ! cleanup_review_worktree; then
