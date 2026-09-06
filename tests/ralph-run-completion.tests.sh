@@ -600,4 +600,18 @@ set -e
 [[ "$nested_status" -eq 1 ]]
 grep -Fq 'refusing to start a nested Ralph runner' <<< "$nested_output"
 
+python3 - "$RUNNER" "$reject_root" <<'PY'
+import fcntl
+from pathlib import Path
+import subprocess
+import sys
+
+runner, root = sys.argv[1:]
+with (Path(root) / '.git/ralph-run.lock').open('a') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    result = subprocess.run(['bash', runner, '1'], cwd=root, capture_output=True, text=True)
+assert result.returncode != 0
+assert 'another Ralph runner is already active' in result.stderr
+PY
+
 printf 'PASS: policy rejection/repair, failure rollback, commit gate, dirty tree, and recursion guard.\n'

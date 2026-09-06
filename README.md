@@ -76,6 +76,25 @@ allowed to count as passing. A rejected story returns to `passes: false` and is 
 next iteration. The runner also refuses to start if unrelated files outside `scripts/ralph` are
 already dirty.
 
+## Ralph completion notifications
+
+On the WSL Codex CLI and the Windows App executing in WSL, `ralph-run` starts a detached Python
+supervisor and ends the parent turn.
+The supervisor waits for the existing implementation/review loop, saves detailed logs, and queues
+one terminal result to the initiating thread with `codex queue`. There is no periodic parent-model
+polling. Run IDs and durable results live in `scripts/ralph/logs/runs/<run-id>/result.json`.
+
+This requires `codex queue --thread`, the initiating `CODEX_THREAD_ID`, Python 3 and `flock`.
+The Windows App queue-and-resume route was verified in-App on 2026-09-07 using the App
+`CODEX_HOME` and initiating thread ID unchanged. The full supervisor/runner fixture was tested
+on the WSL CLI; native PowerShell execution is not covered. Missing queue support fails before
+work starts.
+Notification failures are recorded separately from execution results and are not retried.
+An OS shutdown or forced supervisor kill can prevent delivery; saved running state is not proof
+of liveness. Inspect the result and logs when recovering. Never start a second run to recover a
+notification. Existing PRD formats and policy gates are preserved; the old attached polling
+workflow and worker/reviewer console streaming have been removed.
+
 ## Verify
 
 ```bash

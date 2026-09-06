@@ -9,8 +9,8 @@ Run Ralph's serial implementation loop using fresh `codex exec` processes instea
 Claude Workflow subagents. This is the Codex equivalent of the local Claude
 `ralph-run` skill: each iteration starts with a clean agent context, reads the project's
 Ralph instructions and updates `prd.json` and `progress.txt`. The runner independently reviews each
-diff for fail-close/clean-break violations, commits only approved work, and by default stays attached
-until every story is approved or the runner reaches a concrete blocked condition.
+diff for fail-close/clean-break violations, commits only approved work, and runs under a detached supervisor until every story is approved or the runner reaches a
+concrete blocked condition. The supervisor queues one result to the initiating Codex thread.
 
 Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, or the
 `prd`/`ralph` skills just to run the loop. The runner reads them as-is.
@@ -31,30 +31,41 @@ Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, o
 2. Check that `RALPH_DIR/prd.json` and `RALPH_DIR/CLAUDE.md` both exist. If
    `scripts/ralph` is missing, use `ralph-bootstrap` first. If only `prd.json` is
    missing, tell the user to create a PRD with `/prd`, then convert it with `/ralph`.
-3. Start exactly one foreground runner execution:
+3. Require a valid `CODEX_THREAD_ID` and a Codex CLI with `codex queue --thread` support.
+   Use the current session's environment (including `CODEX_HOME`) so the notification targets
+   the same server and thread. Do not substitute another thread or home directory. If either
+   requirement is missing, stop before starting work. The queue-and-resume route has been verified on the WSL Codex CLI and on the Windows
+   App executing in WSL with `CODEX_HOME=/mnt/c/Users/reisu/.codex` (2026-09-07). The full
+   supervisor/runner fixture was tested on the WSL CLI; native PowerShell execution is not covered.
+4. Start exactly one supervisor, using the script alongside this skill:
 
    ```bash
-   bash ~/.codex/skills/ralph-run/scripts/ralph-run-codex.sh [max-iterations]
+   python3 <skill-dir>/scripts/ralph-notify.py \
+     --thread "$CODEX_THREAD_ID" --ralph-dir "$PWD/scripts/ralph" \
+     --max-iterations 0
    ```
 
-   The script creates `progress.txt` if missing, then runs one worker and one independent policy
-   reviewer per iteration. Do not append `&`, use `nohup`, or otherwise detach it.
+   Replace 0 only with the user's explicit iteration limit. The launcher waits for a short startup
+   acknowledgement, returns a run ID and result file, then exits. It detaches the supervisor
+   itself; do not add `&` or `nohup`. A repository lock prevents simultaneous runners.
+5. When `started=true` is returned, tell the user that Ralph started and provide the result file.
+   **End the turn.** Do not keep the parent active using wait/stdin, sleeps, process checks,
+   log-tail polling, goals, or another monitoring agent. The program waits for Ralph and uses
+   `codex queue` once when it finishes. Detailed worker/reviewer output remains in files.
+6. On receipt of `[Ralph result]`, read that run's `result.json` and report its terminal status,
+   iterations, exit code and progress path. `limit_reached` is incomplete; `blocked`, `failed`
+   and `interrupted` are not success. Do not launch another run automatically. On failure, read
+   only the relevant log excerpt needed to explain it, not the entire execution history.
 
-4. Keep the original execution session attached until it returns an exit code:
-   - If the execution tool yields a running session ID, retain it and wait on that same session
-     using the tool's session wait/stdin operation.
-   - Wait in intervals no longer than 60 seconds, without posting intermediate progress unless the
-     user asks for it.
-   - Do not replace the attached wait with `sleep`, `pgrep`, log-tail polling, another terminal
-     command, or a newly launched runner.
-   - If the session handle is lost, immediately report that monitoring was lost. Never claim that
-     completion notification is still active merely because an OS process remains.
-
-5. Only after that attached session completes, summarize:
-   - whether Ralph completed
-   - iterations run
-   - where `scripts/ralph/progress.txt` is
-   - any failed command or nonzero child exit code
+The durable result separates work status from notification status. `notification=queued` means
+Codex accepted the message, not that the user read it. If queuing fails or times out, the supervisor
+records `notification=failed` and diagnostics in `notification.log`; it does not retry, switch
+servers, or claim delivery. If asked for status, run `python3 <skill-dir>/scripts/ralph-notify.py --status <result-file>`;
+it checks the recorded process identity and reports `monitoring_lost` for a dead supervisor.
+The raw file's `starting`/`running`
+is only a last-recorded state, not proof of a live process. An OS/WSL shutdown or forced supervisor
+kill can prevent notification entirely. Report monitoring loss if the supervisor has disappeared;
+do not infer completion or automatically restart. The run directory is the recovery evidence.
 
 ## Execution Notes
 
