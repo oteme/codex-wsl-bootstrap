@@ -5,6 +5,19 @@ RUNNER="${RUNNER:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/skills/ralph
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
+# Isolate the installed runtime; the executable shim uses the existing exported mock.
+cp -R "$(dirname "$RUNNER")/.." "$TEST_ROOT/skill"
+RUNNER="$TEST_ROOT/skill/scripts/ralph-run-codex.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'codex "$@"' > "$TEST_ROOT/mock-codex"
+chmod +x "$TEST_ROOT/mock-codex"
+python3 - "$TEST_ROOT" <<'PY_RUNTIME'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+(root / 'skill/scripts/codex-runtime.json').write_text(json.dumps({
+    'schema': 1, 'codex': str(root / 'mock-codex'), 'setup_version': 'fixture',
+}))
+PY_RUNTIME
+
 mktemp() {
   if [[ "${MOCK_MKTEMP_FAILURE:-0}" == "1" ]]; then
     return 70

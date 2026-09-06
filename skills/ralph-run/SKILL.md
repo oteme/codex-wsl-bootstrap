@@ -32,6 +32,11 @@ Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, o
    `scripts/ralph` is missing, use `ralph-bootstrap` first. If only `prd.json` is
    missing, tell the user to create a PRD with `/prd`, then convert it with `/ralph`.
 3. Require a valid `CODEX_THREAD_ID` and a Codex CLI with `codex queue --thread` support.
+   Setup records its verified CLI's absolute path in `scripts/codex-runtime.json`. The supervisor,
+   worker, reviewer and notification use that executable, regardless of the desktop app's PATH.
+   If the record or executable is missing/invalid, stop and rerun `Downloads/setup-wsl.cmd`;
+   do not select another CLI from PATH or change the configured model. Source-only copies without
+   a setup-generated runtime record are not runnable.
    Use the current session's environment (including `CODEX_HOME`) so the notification targets
    the same server and thread. Do not substitute another thread or home directory. If either
    requirement is missing, stop before starting work. The queue-and-resume route has been verified on the WSL Codex CLI and on the Windows

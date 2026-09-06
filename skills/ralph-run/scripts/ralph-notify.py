@@ -7,11 +7,12 @@ import os
 from pathlib import Path
 import re
 import select
-import shutil
 import signal
 import subprocess
 import sys
 import uuid
+
+from ralph_runtime import load as load_codex
 
 
 def save(path, value):
@@ -132,9 +133,7 @@ def start(args):
             raise ValueError('missing Ralph input: ' + str(ralph / name))
     project = subprocess.check_output(['git', '-C', str(ralph), 'rev-parse', '--show-toplevel'],
                                       text=True).strip()
-    codex = shutil.which('codex')
-    if not codex:
-        raise ValueError('codex is not on PATH')
+    codex = load_codex()
     check = subprocess.run([codex, 'queue', '--help'], capture_output=True, timeout=10)
     if check.returncode != 0 or b'--thread' not in check.stdout:
         raise ValueError('this Codex does not support queue --thread; refusing to start')

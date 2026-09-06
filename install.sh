@@ -340,6 +340,9 @@ install_ralph() {
   install_skill "$RALPH_SOURCE_DIR/skills/ralph" "ralph" "$target_skills_dir" "$SCRIPT_DIR/config/ralph-fail-close-clean-break.md"
   install_skill "$SCRIPT_DIR/skills/ralph-bootstrap" "ralph-bootstrap" "$target_skills_dir"
   install_skill "$SCRIPT_DIR/skills/ralph-run" "ralph-run" "$target_skills_dir"
+  run python3 "$SCRIPT_DIR/skills/ralph-run/scripts/ralph_runtime.py" \
+    --record "$target_skills_dir/ralph-run/scripts/codex-runtime.json" \
+    --codex "$(type -P codex)"
 }
 
 install_local_skills() {
