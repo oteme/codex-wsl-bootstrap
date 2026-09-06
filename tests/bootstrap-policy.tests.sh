@@ -108,6 +108,16 @@ printf '%s\n' \
 
 test_bin="$TEST_ROOT/bin"
 mkdir -p "$test_bin"
+# Doctor's policy fixtures must not depend on workstation-installed CLIs.
+for tool in codex bun; do
+  cat > "$test_bin/$tool" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$#" -eq 1 && "$1" == --version ]]
+printf 'fixture-version\n'
+EOF
+  chmod 0755 "$test_bin/$tool"
+done
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \

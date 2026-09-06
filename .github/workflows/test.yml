@@ -23,8 +23,18 @@ jobs:
         run: python3 tests/ralph-notify.tests.py
   windows:
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Install Ubuntu for real WSL path conversion
+        shell: powershell
+        run: |
+          wsl.exe --install Ubuntu-24.04 --web-download --no-launch
+          if ($LASTEXITCODE -ne 0) { throw "WSL installation failed: $LASTEXITCODE" }
+          wsl.exe --set-default Ubuntu-24.04
+          if ($LASTEXITCODE -ne 0) { throw "WSL default selection failed: $LASTEXITCODE" }
+          wsl.exe --distribution Ubuntu-24.04 --user root --exec true
+          if ($LASTEXITCODE -ne 0) { throw "WSL startup failed: $LASTEXITCODE" }
       - name: Windows launcher tests
         shell: powershell
         run: ./tests/setup-wsl-path.tests.ps1
