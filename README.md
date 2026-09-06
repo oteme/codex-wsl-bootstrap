@@ -84,6 +84,13 @@ The supervisor waits for the existing implementation/review loop, saves detailed
 one terminal result to the initiating thread with `codex queue`. There is no periodic parent-model
 polling. Run IDs and durable results live in `scripts/ralph/logs/runs/<run-id>/result.json`.
 
+Setup records its verified Codex CLI's absolute path in each installed Ralph skill's
+`scripts/codex-runtime.json`. Workers, reviewers and notifications use that executable even
+when the desktop app's PATH puts an older CLI first. To apply this update on an existing
+device, rerun `Downloads/setup-wsl.cmd`. A missing or invalid runtime record or executable
+stops Ralph before work; rerun the same CMD to repair it. The initiating `CODEX_HOME` and
+configured model are preserved.
+
 This requires `codex queue --thread`, the initiating `CODEX_THREAD_ID`, Python 3 and `flock`.
 The Windows App queue-and-resume route was verified in-App on 2026-09-07 using the App
 `CODEX_HOME` and initiating thread ID unchanged. The full supervisor/runner fixture was tested
