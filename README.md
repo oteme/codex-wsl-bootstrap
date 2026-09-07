@@ -127,8 +127,12 @@ References: [Codex MCP](https://developers.openai.com/codex/mcp),
 ## Ralph policy gate
 
 `ralph-bootstrap` generates project instructions that forbid speculative fallbacks and
-compatibility paths. The installed `prd` and `ralph` skills require explicit failure behavior,
-compatibility decisions, and deletion criteria.
+compatibility paths. A decision the PRD does not settle is made within its confirmed design
+decisions and recorded in `progress.txt`, not escalated as a stop, and the instructions carry an
+`Authorized actions` list for external resources. The installed `prd` skill requires explicit
+failure behavior, compatibility decisions, a confirmed-decisions table, and a pre-run checklist
+for work only a person can do; the `ralph` skill references those decisions by ID instead of
+copying policy text or serial gates into every story.
 
 During `ralph-run`, workers leave each story uncommitted. A fresh Codex process statically reviews
 the exact staged diff in a disposable detached Git worktree for swallowed failures, unrequested
@@ -136,8 +140,10 @@ fallback/legacy paths, and weakened tests. Acceptance criteria are consulted onl
 policy exceptions; the reviewer does not grade general story correctness or completeness.
 Reviewer-created files are discarded with that worktree. Only an approved diff is committed and
 allowed to count as passing. A rejected story returns to `passes: false` and is repaired in the
-next iteration. The runner also refuses to start if unrelated files outside `scripts/ralph` are
-already dirty.
+next iteration. An iteration that completes no story keeps its uncommitted work in place for the
+next iteration; three consecutive such iterations on the same story stop the run as blocked. The
+runner refuses to start if unrelated files outside `scripts/ralph` are already dirty, unless they
+exactly match the work recorded by the previous run in `scripts/ralph/logs/leftover.txt`.
 
 ## Ralph completion notifications
 

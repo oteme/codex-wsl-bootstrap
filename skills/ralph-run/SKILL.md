@@ -22,6 +22,10 @@ Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, o
   it. `0` also means run until complete.
 - Rejection circuit breaker: the same story may be rejected at most 3 consecutive times by default.
   Override only when explicitly needed with `RALPH_MAX_CONSECUTIVE_REJECTIONS`.
+- No-progress circuit breaker: an iteration that completes no story keeps its uncommitted work in
+  place and the next iteration continues from it. After 3 consecutive such iterations on the same
+  story the runner stops as blocked. Override only when explicitly needed with
+  `RALPH_MAX_CONSECUTIVE_NO_PROGRESS`.
 - Ralph directory: `<project-root>/scripts/ralph` by default. Run from the project root,
   the same directory where `./scripts/ralph/ralph.sh` would be run.
 
@@ -59,7 +63,9 @@ Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, o
    `codex queue` once when it finishes. Detailed worker/reviewer output remains in files.
 6. On receipt of `[Ralph result]`, read that run's `result.json` and report its terminal status,
    iterations, exit code and progress path. `limit_reached` is incomplete; `blocked`, `failed`
-   and `interrupted` are not success. Do not launch another run automatically. On failure, read
+   and `interrupted` are not success. A `blocked` result means the same story was rejected or
+   completed nothing repeatedly; read its latest `progress.txt` entry and `logs/leftover.txt`
+   before deciding what to change. Do not launch another run automatically. On failure, read
    only the relevant log excerpt needed to explain it, not the entire execution history.
 
 The durable result separates work status from notification status. `notification=queued` means
@@ -83,8 +89,9 @@ do not infer completion or automatically restart. The run directory is the recov
   ordered updates to `prd.json` and `progress.txt`.
 - An omitted iteration limit is intentional. Do not invent a 10-iteration default and do not chain
   extra runner invocations after a guessed limit. A user-supplied numeric limit remains authoritative.
-- Three consecutive policy rejections for the same story stop the runner as blocked instead of
-  consuming unbounded retries. Nonzero child exits and invalid state transitions already fail closed.
+- Three consecutive policy rejections, or three consecutive iterations that complete no story, on
+  the same story stop the runner as blocked instead of consuming unbounded retries. Nonzero child
+  exits and invalid state transitions still fail closed.
 - Child agents are instructed to read `RALPH_DIR/CLAUDE.md` in full and follow it as the
   authoritative task specification for that iteration.
 - Child agents implement one iteration directly. They must not invoke `ralph-run`, run the
@@ -105,7 +112,9 @@ do not infer completion or automatically restart. The run directory is the recov
   allowed; it does not grade general story correctness or completeness. Rejected work remains
   uncommitted and the story returns to `passes: false` for repair in the next iteration.
 - The runner refuses to start when files outside `scripts/ralph` are already modified or untracked,
-  preventing a story commit from absorbing unrelated work.
+  unless they exactly match the uncommitted work recorded in `scripts/ralph/logs/leftover.txt` by
+  the previous run, in which case the run resumes from it. This prevents a story commit from
+  absorbing unrelated work.
 - A zero child exit with an empty final message is an error, not an incomplete iteration.
   Report the iteration log because authentication or MCP startup may have failed.
 - Completion is derived from validated `prd.json` state after the approved commit. It is not trusted

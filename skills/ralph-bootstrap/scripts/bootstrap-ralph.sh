@@ -90,6 +90,8 @@ requirements that would help future work.
 - Before working on a Go backend, HTTP API, SQL, persistence, or migration story, invoke the
   installed `go-backend` skill and read the references it routes to for that story
 - Run the project's relevant checks
+- If the working tree already contains uncommitted work for the selected story, continue from
+  it; do not discard or redo it
 - Do not run `git commit`; the outer runner owns the commit gate
 
 ## Fail-close and Clean-break Requirements
@@ -104,9 +106,21 @@ requirements that would help future work.
 - Existing required fallback or compatibility behavior may be preserved. New behavior of that kind
   must be traceable to an acceptance criterion.
 
-If a correct implementation requires a failure, compatibility, or migration decision missing from
-the PRD, do not guess. Keep `passes: false`, append a `BLOCKED` entry to `progress.txt` describing the
-exact missing decision, and stop the iteration.
+If a correct implementation needs a decision the PRD does not settle, decide within the PRD's
+confirmed design decisions (確定した設計判断) and Non-Goals, record the decision and its basis
+under a `設計判断` heading in your progress.txt entry, and continue. Do not stop the iteration
+for a missing decision, and do not turn it into a fallback or compatibility policy. Leave
+`passes: false` only when checks fail or the story is unfinished; then write what remains so the
+next iteration can continue from your uncommitted work.
+
+## Authorized actions
+
+- Repository changes, local builds, and local tests: allowed.
+- External resources this worker may create, deploy to, share, or modify: none listed. Add
+  entries here before running stories that need them.
+
+Work outside this list is recorded as remaining work in progress.txt. It is not performed, and
+it is not a reason to stop the iteration.
 
 ## Browser Testing
 
@@ -116,7 +130,9 @@ are available, note that manual browser verification is still needed.
 ## Stop Condition
 
 End after one story. The outer runner validates the state transition, performs the independent
-policy review, commits approved work, and decides whether all stories are complete.
+policy review, commits approved work, and decides whether all stories are complete. If you could
+not finish, the next iteration continues from your uncommitted work; several consecutive
+iterations without a completed story stop the run.
 EOF
   echo "created: $CLAUDE_FILE"
 else

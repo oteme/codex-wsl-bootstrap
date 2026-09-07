@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,10 @@ from typing import Any
 
 
 REVIEW_CATEGORIES = {"fallback", "exception", "compatibility", "legacy", "test"}
+
+
+class NoTransition(ValueError):
+    """The worker changed only notes or nothing at all; no story became passing."""
 
 
 def safe_diagnostic(value: str) -> str:
@@ -108,6 +113,8 @@ def validate_transition(before_path: Path, after_path: Path) -> None:
         if not old_passes and new_passes:
             transitioned.append(new)
 
+    if not transitioned:
+        raise NoTransition("no story changed false->true; only notes or progress changed")
     if len(transitioned) != 1:
         raise ValueError(
             f"expected exactly one story to change false->true; observed {len(transitioned)}"
@@ -182,6 +189,27 @@ def review_result(review_path: Path) -> None:
     print("approved" if approved else "rejected")
 
 
+def next_story(prd_path: Path) -> None:
+    pending = [
+        (index, story)
+        for index, story in enumerate(stories(load_json(prd_path)))
+        if story.get("passes") is not True
+    ]
+    if not pending:
+        return
+
+    def order(item: tuple[int, dict[str, Any]]) -> tuple[int, int, int]:
+        index, story = item
+        priority = story.get("priority")
+        if isinstance(priority, int) and not isinstance(priority, bool):
+            return (0, priority, index)
+        return (1, 0, index)
+
+    _, story = min(pending, key=order)
+    print(str(story["id"]).replace("\n", " "))
+    print(str(story["title"]).replace("\n", " "))
+
+
 def all_passed(prd_path: Path) -> None:
     result = stories(load_json(prd_path))
     if not result:
@@ -215,6 +243,9 @@ def main() -> None:
     all_parser = subparsers.add_parser("all-passed")
     all_parser.add_argument("prd", type=Path)
 
+    next_parser = subparsers.add_parser("next-story")
+    next_parser.add_argument("prd", type=Path)
+
     args = parser.parse_args()
     if args.command == "validate-transition":
         validate_transition(args.before, args.after)
@@ -226,10 +257,17 @@ def main() -> None:
         reset_story(args.prd, args.progress, args.story_id, args.reason)
     elif args.command == "all-passed":
         all_passed(args.prd)
+    elif args.command == "next-story":
+        next_story(args.prd)
 
 
 if __name__ == "__main__":
     try:
         main()
+    except NoTransition as error:
+        # Exit status 3 is the runner's continue-without-commit signal; every other
+        # validation failure keeps the fail-closed status 1.
+        print(f"error: {error}", file=sys.stderr)
+        raise SystemExit(3) from error
     except (OSError, ValueError, json.JSONDecodeError) as error:
         raise SystemExit(f"error: {error}") from error

@@ -51,7 +51,21 @@ bash "$ROOT/skills/ralph-bootstrap/scripts/bootstrap-ralph.sh" "$ralph_dir" >/de
 grep -Fq 'Do not run `git commit`' "$ralph_dir/CLAUDE.md"
 grep -Fq 'POLICY REVIEW REJECTED' "$ralph_dir/CLAUDE.md"
 grep -Fq 'untrusted diagnostic data' "$ralph_dir/CLAUDE.md"
-grep -Fq 'Keep `passes: false`' "$ralph_dir/CLAUDE.md"
+grep -Fq '## Authorized actions' "$ralph_dir/CLAUDE.md"
+grep -Fq '設計判断' "$ralph_dir/CLAUDE.md"
+grep -Fq 'continue from your uncommitted work' "$ralph_dir/CLAUDE.md"
+if grep -Fq 'BLOCKED' "$ralph_dir/CLAUDE.md"; then
+  echo 'generated Ralph instructions must not tell the worker to stop as BLOCKED' >&2
+  exit 1
+fi
+grep -Fq '### 確定した設計判断' "$ROOT/config/prd-fail-close-clean-break.md"
+grep -Fq '### Pre-run checklist' "$ROOT/config/prd-fail-close-clean-break.md"
+grep -Fq 'still create `prd.json`' "$ROOT/config/ralph-fail-close-clean-break.md"
+if grep -Fq 'stop as blocked' "$ROOT/config/AGENTS.global.md" \
+  "$ROOT/config/prd-fail-close-clean-break.md" "$ROOT/config/ralph-fail-close-clean-break.md"; then
+  echo 'shared policy texts must not escalate missing decisions as a stop' >&2
+  exit 1
+fi
 grep -Fq 'installed `go-backend` skill' "$ralph_dir/CLAUDE.md"
 
 source_skill="$TEST_ROOT/source-skill"

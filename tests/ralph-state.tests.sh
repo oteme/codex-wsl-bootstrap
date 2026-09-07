@@ -160,4 +160,45 @@ write_prd "$after" true false
 printf '{"userStories":[]}\n' > "$after"
 expect_failure 'no user stories' python3 "$STATE_TOOL" all-passed "$after"
 
+# A worker that changes nothing, or only notes, yields the distinct continue status 3.
+write_prd "$before" false false
+write_prd "$after" false false
+set +e
+zero_output="$(python3 "$STATE_TOOL" validate-transition "$before" "$after" 2>&1)"
+zero_status=$?
+set -e
+[[ "$zero_status" -eq 3 ]]
+grep -Fq 'no story changed false->true' <<< "$zero_output"
+python3 - "$after" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["userStories"][0]["notes"] = "partial work recorded"
+json.dump(data, open(path, "w", encoding="utf-8"))
+PY
+set +e
+python3 "$STATE_TOOL" validate-transition "$before" "$after" >/dev/null 2>&1
+notes_status=$?
+set -e
+[[ "$notes_status" -eq 3 ]]
+
+# next-story picks the pending story with the lowest priority, then file order.
+write_prd "$after" false false
+[[ "$(python3 "$STATE_TOOL" next-story "$after" | head -1)" == "US-001" ]]
+python3 - "$after" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["userStories"][0]["priority"] = 2
+data["userStories"][1]["priority"] = 1
+json.dump(data, open(path, "w", encoding="utf-8"))
+PY
+next_output="$(python3 "$STATE_TOOL" next-story "$after")"
+[[ "$(head -1 <<< "$next_output")" == "US-002" ]]
+[[ "$(tail -1 <<< "$next_output")" == "Second" ]]
+write_prd "$after" true false
+[[ "$(python3 "$STATE_TOOL" next-story "$after" | head -1)" == "US-002" ]]
+write_prd "$after" true true
+[[ -z "$(python3 "$STATE_TOOL" next-story "$after")" ]]
+
 printf 'PASS: Ralph state transition and policy-result trust boundaries.\n'

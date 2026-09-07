@@ -12,6 +12,8 @@ Defaults:
 Environment:
   RALPH_MAX_CONSECUTIVE_REJECTIONS: stop after this many policy rejections for
                                     the same story (default: 3)
+  RALPH_MAX_CONSECUTIVE_NO_PROGRESS: stop after this many consecutive iterations
+                                     that complete no story (default: 3)
 EOF
 }
 
@@ -28,6 +30,7 @@ fi
 MAX_ITER="${1:-0}"
 RALPH_DIR_INPUT="${2:-"$PWD/scripts/ralph"}"
 MAX_CONSECUTIVE_REJECTIONS="${RALPH_MAX_CONSECUTIVE_REJECTIONS:-3}"
+MAX_CONSECUTIVE_NO_PROGRESS="${RALPH_MAX_CONSECUTIVE_NO_PROGRESS:-3}"
 
 if ! [[ "$MAX_ITER" =~ ^[0-9]+$ ]]; then
   echo "error: max-iterations must be a non-negative integer; omit it or use 0 to run until complete" >&2
@@ -37,6 +40,12 @@ fi
 if ! [[ "$MAX_CONSECUTIVE_REJECTIONS" =~ ^[0-9]+$ ]] \
   || [[ "$MAX_CONSECUTIVE_REJECTIONS" -lt 1 ]]; then
   echo "error: RALPH_MAX_CONSECUTIVE_REJECTIONS must be a positive integer" >&2
+  exit 2
+fi
+
+if ! [[ "$MAX_CONSECUTIVE_NO_PROGRESS" =~ ^[0-9]+$ ]] \
+  || [[ "$MAX_CONSECUTIVE_NO_PROGRESS" -lt 1 ]]; then
+  echo "error: RALPH_MAX_CONSECUTIVE_NO_PROGRESS must be a positive integer" >&2
   exit 2
 fi
 
@@ -157,9 +166,9 @@ if ! flock -n 9; then
   exit 1
 fi
 
-# prd.json/progress.txt are commonly created immediately before the first run. Permit bootstrap
-# metadata there, but never absorb unrelated application changes into a Ralph story commit.
-outside_changes="$(
+LEFTOVER_FILE="$LOG_DIR/leftover.txt"
+
+outside_changes_now() {
   git -C "$PROJECT_ROOT" status --porcelain=v1 --untracked-files=all | while IFS= read -r line; do
     path="${line:3}"
     case "$path" in
@@ -167,12 +176,36 @@ outside_changes="$(
       *) printf '%s\n' "$line" ;;
     esac
   done
-)"
+}
+
+# Record the uncommitted work a stopped run leaves behind so the next run can resume it, and
+# only it. A clean tree removes the record.
+record_leftover() {
+  local changes
+  changes="$(outside_changes_now)"
+  if [[ -n "$changes" ]]; then
+    printf '%s\n' "$changes" > "$LEFTOVER_FILE"
+  else
+    rm -f "$LEFTOVER_FILE"
+  fi
+}
+
+# prd.json/progress.txt are commonly created immediately before the first run. Permit bootstrap
+# metadata there, but never absorb unrelated application changes into a Ralph story commit.
+# Work recorded by the previous runner exit is resumed only when it matches exactly.
+outside_changes="$(outside_changes_now)"
 if [[ -n "$outside_changes" ]]; then
-  echo "error: refusing to start with pre-existing changes outside scripts/ralph" >&2
-  printf '%s\n' "$outside_changes" >&2
-  echo "Commit, stash, or move those changes before running Ralph." >&2
-  exit 1
+  if [[ -f "$LEFTOVER_FILE" && "$outside_changes" == "$(cat "$LEFTOVER_FILE")" ]]; then
+    echo "pre-run: resuming uncommitted work left by the previous run"
+  else
+    echo "error: refusing to start with pre-existing changes outside scripts/ralph" >&2
+    printf '%s\n' "$outside_changes" >&2
+    echo "Commit, stash, or move those changes before running Ralph." >&2
+    if [[ -f "$LEFTOVER_FILE" ]]; then
+      echo "They differ from the work recorded in $LEFTOVER_FILE." >&2
+    fi
+    exit 1
+  fi
 fi
 
 completed=0
@@ -181,6 +214,8 @@ iterations_run=0
 retry_story_id=""
 rejection_story_id=""
 consecutive_rejections=0
+no_progress_story_id=""
+consecutive_no_progress=0
 
 for ((i = 1; MAX_ITER == 0 || i <= MAX_ITER; i++)); do
   iterations_run="$i"
@@ -198,6 +233,21 @@ for ((i = 1; MAX_ITER == 0 || i <= MAX_ITER; i++)); do
     echo "Ralph iteration $i of $MAX_ITER"
   fi
 
+  expected_story_output="$(python3 "$STATE_TOOL" next-story "$RALPH_DIR/prd.json")"
+  if [[ -z "$expected_story_output" ]]; then
+    completed=1
+    iterations_run=$((i - 1))
+    echo "Ralph found no pending story; all stories already pass"
+    break
+  fi
+  mapfile -t expected_fields <<< "$expected_story_output"
+  EXPECTED_STORY_ID="${expected_fields[0]:-}"
+
+  resume_note=""
+  if [[ -n "$(outside_changes_now)" ]]; then
+    resume_note="Uncommitted work for story $EXPECTED_STORY_ID from a previous iteration is present in the working tree. Continue from it; do not discard or redo it."
+  fi
+
   prompt=$(cat <<EOF
 You are the implementation worker for exactly one Ralph iteration.
 
@@ -209,6 +259,7 @@ That file is your complete and authoritative task specification for this iterati
 $RALPH_DIR
 
 Run one Ralph iteration only. Update prd.json and progress.txt according to the instructions. Do not commit and do not claim that the whole run is complete; the outer runner owns review, commit, and completion.
+$resume_note
 EOF
 )
 
@@ -226,6 +277,7 @@ EOF
 
   if [[ "$status" -ne 0 ]]; then
     cp "$before_prd" "$RALPH_DIR/prd.json"
+    record_leftover
     echo "error: codex exec failed in iteration $i with status $status" >&2
     echo "log: $log_file" >&2
     exit "$status"
@@ -233,6 +285,7 @@ EOF
 
   if [[ ! -s "$last_message" ]] || ! grep -q '[^[:space:]]' "$last_message"; then
     cp "$before_prd" "$RALPH_DIR/prd.json"
+    record_leftover
     echo "error: codex exec returned no final message in iteration $i" >&2
     echo "This can indicate an authentication or MCP startup failure." >&2
     echo "log: $log_file" >&2
@@ -250,10 +303,36 @@ EOF
   fi
 
   transition_output=""
-  if ! transition_output="$(python3 "$STATE_TOOL" validate-transition "$before_prd" "$RALPH_DIR/prd.json")"; then
+  set +e
+  transition_output="$(python3 "$STATE_TOOL" validate-transition "$before_prd" "$RALPH_DIR/prd.json")"
+  transition_status=$?
+  set -e
+
+  if [[ "$transition_status" -eq 3 ]]; then
+    # The worker changed only notes and progress. Keep its work in the tree for the next
+    # iteration instead of failing the run; repeated no-progress on one story stops as blocked.
+    record_leftover
+    if [[ "$no_progress_story_id" == "$EXPECTED_STORY_ID" ]]; then
+      consecutive_no_progress=$((consecutive_no_progress + 1))
+    else
+      no_progress_story_id="$EXPECTED_STORY_ID"
+      consecutive_no_progress=1
+    fi
+    if [[ "$consecutive_no_progress" -ge "$MAX_CONSECUTIVE_NO_PROGRESS" ]]; then
+      blocked=1
+      echo "error: no story was completed in $consecutive_no_progress consecutive iterations on $EXPECTED_STORY_ID; stopping as blocked" >&2
+      echo "Inspect $PROGRESS_FILE and the uncommitted work recorded in $LEFTOVER_FILE." >&2
+      break
+    fi
+    retry_story_id="$EXPECTED_STORY_ID"
+    echo "Iteration $i completed no story; leaving the work for the next iteration (see $PROGRESS_FILE)."
+    continue
+  fi
+
+  if [[ "$transition_status" -ne 0 ]]; then
     cp "$before_prd" "$RALPH_DIR/prd.json"
     echo "error: worker did not produce one valid story transition in iteration $i" >&2
-    echo "If the story is blocked, inspect: $PROGRESS_FILE" >&2
+    echo "Inspect: $PROGRESS_FILE" >&2
     exit 1
   fi
 
@@ -264,8 +343,8 @@ EOF
   if [[ -n "$retry_story_id" && "$STORY_ID" != "$retry_story_id" ]]; then
     cp "$before_prd" "$RALPH_DIR/prd.json"
     python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
-      "Expected repair of rejected story $retry_story_id, but worker completed $STORY_ID instead."
-    echo "error: policy rejection repair must stay on $retry_story_id; worker completed $STORY_ID" >&2
+      "Expected the worker to continue $retry_story_id, but it completed $STORY_ID instead."
+    echo "error: the worker must stay on $retry_story_id until it is completed; it completed $STORY_ID instead" >&2
     exit 1
   fi
 
@@ -463,6 +542,7 @@ EOF
     cp "$before_prd" "$RALPH_DIR/prd.json"
     python3 "$STATE_TOOL" reject \
       "$RALPH_DIR/prd.json" "$review_file" "$PROGRESS_FILE" "$STORY_ID"
+    record_leftover
     if [[ "$rejection_story_id" == "$STORY_ID" ]]; then
       consecutive_rejections=$((consecutive_rejections + 1))
     else
@@ -502,6 +582,9 @@ EOF
   retry_story_id=""
   rejection_story_id=""
   consecutive_rejections=0
+  no_progress_story_id=""
+  consecutive_no_progress=0
+  rm -f "$LEFTOVER_FILE"
 
   if [[ "$(python3 "$STATE_TOOL" all-passed "$RALPH_DIR/prd.json")" == "true" ]]; then
     completed=1
@@ -513,9 +596,12 @@ EOF
 done
 
 if [[ "$blocked" -eq 1 ]]; then
-  echo "Ralph stopped because the current story is blocked by repeated policy rejection."
+  echo "Ralph stopped as blocked: the current story was rejected or completed nothing repeatedly."
 elif [[ "$completed" -eq 0 && "$MAX_ITER" -gt 0 ]]; then
   echo "Ralph reached max iterations ($MAX_ITER) without completing all tasks."
+fi
+if [[ -f "$LEFTOVER_FILE" ]]; then
+  echo "Uncommitted work is recorded in $LEFTOVER_FILE; the next run resumes from it."
 fi
 
 echo "completed=$completed"

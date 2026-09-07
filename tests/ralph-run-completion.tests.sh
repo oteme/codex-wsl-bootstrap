@@ -113,6 +113,13 @@ codex() {
     return 0
   fi
 
+  if [[ "$MOCK_MODE" == "progress-later" ]] \
+    && [[ "$(grep -c '^worker$' "$MOCK_CALLS_FILE")" -eq 1 ]]; then
+    printf 'partial work\n' >> "$codex_cwd/app.txt"
+    printf 'worker paused\n' > "$last_message"
+    return 0
+  fi
+
   if [[ "$MOCK_MODE" != "blocked" ]]; then
     local worker_count story_index
     worker_count="$(grep -c '^worker$' "$MOCK_CALLS_FILE")"
@@ -437,8 +444,66 @@ blocked_output="$(cd "$blocked_root" && bash "$RUNNER" 3 2>&1)"
 blocked_status=$?
 set -e
 [[ "$blocked_status" -eq 1 ]]
-grep -Fq 'did not produce one valid story transition' <<< "$blocked_output"
+grep -Fq 'Iteration 1 completed no story' <<< "$blocked_output"
+grep -Fq 'no story was completed in 3 consecutive iterations on US-001' <<< "$blocked_output"
+grep -Fq 'blocked=1' <<< "$blocked_output"
+grep -Fq 'iterationsRun=3' <<< "$blocked_output"
+[[ "$(grep -c '^worker$' "$MOCK_CALLS_FILE")" -eq 3 ]]
 [[ "$(grep -c '^review$' "$MOCK_CALLS_FILE" || true)" -eq 0 ]]
+grep -Fq '"passes": false' "$blocked_root/scripts/ralph/prd.json"
+[[ ! -e "$blocked_root/scripts/ralph/logs/leftover.txt" ]]
+
+no_progress_limit_root="$TEST_ROOT/no-progress-limit"
+make_fixture "$no_progress_limit_root"
+export MOCK_MODE="blocked"
+export MOCK_CALLS_FILE="$TEST_ROOT/no-progress-limit-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/no-progress-limit-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+no_progress_limit_output="$(cd "$no_progress_limit_root" && bash "$RUNNER" 2)"
+grep -Fq 'completed=0' <<< "$no_progress_limit_output"
+grep -Fq 'iterationsRun=2' <<< "$no_progress_limit_output"
+grep -Fq 'blocked=0' <<< "$no_progress_limit_output"
+
+progress_later_root="$TEST_ROOT/progress-later"
+make_fixture "$progress_later_root"
+export MOCK_MODE="progress-later"
+export MOCK_CALLS_FILE="$TEST_ROOT/progress-later-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/progress-later-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+progress_later_output="$(cd "$progress_later_root" && bash "$RUNNER" 3)"
+grep -Fq 'Iteration 1 completed no story' <<< "$progress_later_output"
+grep -Fq 'completed=1' <<< "$progress_later_output"
+grep -Fq 'iterationsRun=2' <<< "$progress_later_output"
+[[ "$(grep -c 'Uncommitted work for story US-001' "$MOCK_PROMPTS_FILE")" -eq 1 ]]
+[[ "$(grep -c '^worker$' "$MOCK_CALLS_FILE")" -eq 2 ]]
+[[ "$(grep -c '^review$' "$MOCK_CALLS_FILE")" -eq 1 ]]
+git -C "$progress_later_root" show HEAD:app.txt | grep -Fq 'partial work'
+git -C "$progress_later_root" show HEAD:app.txt | grep -Fq 'implementation attempt'
+[[ ! -e "$progress_later_root/scripts/ralph/logs/leftover.txt" ]]
+[[ -z "$(git -C "$progress_later_root" status --porcelain)" ]]
+
+already_done_root="$TEST_ROOT/already-done"
+make_fixture "$already_done_root"
+python3 - "$already_done_root/scripts/ralph/prd.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+data["userStories"][0]["passes"] = True
+json.dump(data, open(path, "w", encoding="utf-8"), indent=2)
+PY
+git -C "$already_done_root" commit -qam 'all stories already pass'
+export MOCK_MODE="approve"
+export MOCK_CALLS_FILE="$TEST_ROOT/already-done-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/already-done-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+already_done_output="$(cd "$already_done_root" && bash "$RUNNER" 2)"
+grep -Fq 'no pending story' <<< "$already_done_output"
+grep -Fq 'completed=1' <<< "$already_done_output"
+grep -Fq 'iterationsRun=0' <<< "$already_done_output"
+[[ "$(grep -c '^worker$' "$MOCK_CALLS_FILE" || true)" -eq 0 ]]
 
 dirty_root="$TEST_ROOT/dirty"
 make_fixture "$dirty_root"
@@ -454,6 +519,42 @@ dirty_status=$?
 set -e
 [[ "$dirty_status" -eq 1 ]]
 grep -Fq 'pre-existing changes outside scripts/ralph' <<< "$dirty_output"
+
+resume_root="$TEST_ROOT/resume"
+make_fixture "$resume_root"
+printf 'partial work\n' > "$resume_root/app.txt"
+git -C "$resume_root" status --porcelain=v1 --untracked-files=all \
+  > "$resume_root/scripts/ralph/logs/leftover.txt"
+export MOCK_MODE="approve"
+export MOCK_CALLS_FILE="$TEST_ROOT/resume-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/resume-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+resume_output="$(cd "$resume_root" && bash "$RUNNER" 1)"
+grep -Fq 'resuming uncommitted work left by the previous run' <<< "$resume_output"
+grep -Fq 'completed=1' <<< "$resume_output"
+grep -Fq 'Uncommitted work for story US-001' "$MOCK_PROMPTS_FILE"
+git -C "$resume_root" show HEAD:app.txt | grep -Fq 'partial work'
+[[ ! -e "$resume_root/scripts/ralph/logs/leftover.txt" ]]
+
+resume_mismatch_root="$TEST_ROOT/resume-mismatch"
+make_fixture "$resume_mismatch_root"
+printf 'partial work\n' > "$resume_mismatch_root/app.txt"
+git -C "$resume_mismatch_root" status --porcelain=v1 --untracked-files=all \
+  > "$resume_mismatch_root/scripts/ralph/logs/leftover.txt"
+printf 'unrelated\n' > "$resume_mismatch_root/unrelated.txt"
+export MOCK_CALLS_FILE="$TEST_ROOT/resume-mismatch-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/resume-mismatch-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+set +e
+resume_mismatch_output="$(cd "$resume_mismatch_root" && bash "$RUNNER" 1 2>&1)"
+resume_mismatch_status=$?
+set -e
+[[ "$resume_mismatch_status" -eq 1 ]]
+grep -Fq 'pre-existing changes outside scripts/ralph' <<< "$resume_mismatch_output"
+grep -Fq 'differ from the work recorded' <<< "$resume_mismatch_output"
+[[ "$(grep -c '^worker$' "$MOCK_CALLS_FILE" || true)" -eq 0 ]]
 
 worker_error_root="$TEST_ROOT/worker-error"
 make_fixture "$worker_error_root"
@@ -500,7 +601,7 @@ wrong_retry_output="$(cd "$wrong_retry_root" && bash "$RUNNER" 2 2>&1)"
 wrong_retry_status=$?
 set -e
 [[ "$wrong_retry_status" -eq 1 ]]
-grep -Fq 'repair must stay on US-001' <<< "$wrong_retry_output"
+grep -Fq 'must stay on US-001' <<< "$wrong_retry_output"
 [[ "$(grep -c '"passes": false' "$wrong_retry_root/scripts/ralph/prd.json")" -eq 2 ]]
 [[ "$(grep -c '^review$' "$MOCK_CALLS_FILE")" -eq 1 ]]
 
@@ -627,4 +728,4 @@ assert result.returncode != 0
 assert 'another Ralph runner is already active' in result.stderr
 PY
 
-printf 'PASS: policy rejection/repair, failure rollback, commit gate, dirty tree, and recursion guard.\n'
+printf 'PASS: policy rejection/repair, no-progress continuation, leftover resume, failure rollback, commit gate, dirty tree, and recursion guard.\n'
