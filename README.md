@@ -177,20 +177,9 @@ agent process runs inside WSL. The one-click Windows launcher detects the instal
 updates both locations. App-specific configuration, authentication, sessions, and built-in
 plugins remain separate; only bootstrap-managed guidance and skills are installed in both.
 
-If you run the PowerShell launcher directly and need to override App detection, pass the Windows
-profile path explicitly:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup-wsl.ps1 `
-  -CodexAppHome 'C:\Users\<user>\.codex'
-```
-
-Direct WSL installs cannot reliably detect whether the Windows App package is installed. To
-target it explicitly, pass its Windows profile directory as a WSL path:
-
-```bash
-CODEX_APP_HOME=/mnt/c/Users/<user>/.codex ./install.sh
-```
+The internal PowerShell launcher supports `-CodexAppHome`, and its WSL installer receives
+`CODEX_APP_HOME`. These are also exercised in isolated regression fixtures. For workstation
+setup, use `Downloads/setup-wsl.cmd` so App detection and path conversion run together.
 
 Invalid App paths and unmanaged skill collisions fail closed. The installer does not add a
 Windows-native fallback: App sharing requires its WSL execution mode.
@@ -199,25 +188,17 @@ The bootstrap keeps its pinned gstack checkout under
 `~/.local/share/codex-workstation-bootstrap/gstack`. A separate `~/gstack` checkout is left
 untouched, including the generated `gstack-*` skill-name patches that gstack may keep there.
 
-To relocate both bootstrap-managed source checkouts, set the shared state directory:
-
-```bash
-BOOTSTRAP_STATE_DIR=/path/to/bootstrap-state ./install.sh
-```
-
-`GSTACK_INSTALL_DIR` and `RALPH_SOURCE_DIR` still override their individual checkout locations.
+The internal installer supports `BOOTSTRAP_STATE_DIR` for the shared source directory;
+`GSTACK_INSTALL_DIR` and `RALPH_SOURCE_DIR` override their individual checkout locations.
+Regression fixtures exercise these overrides in temporary directories. Workstation changes
+must be delivered through a merged PR and `Downloads/setup-wsl.cmd`.
 
 ## Update pinned versions
 
 The default gstack and Ralph commits and the RTK release/checksums are pinned in `install.sh`
-for reproducible setup.
-You can test newer revisions without editing the file:
-
-```bash
-GSTACK_REF=<commit> RALPH_REF=<commit> ./install.sh
-```
-
-After verification, update the corresponding pinned constants and RTK checksums in `install.sh`.
+for reproducible setup. Node's release and checksums are pinned in `scripts/ensure-node.sh`.
+Test proposed pins using isolated regression fixtures, then update the corresponding constants
+and checksums in a PR. After merging, apply them with `Downloads/setup-wsl.cmd`.
 
 ## Security boundary
 
