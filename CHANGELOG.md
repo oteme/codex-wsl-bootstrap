@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.0.0] - 2026-09-08
+
+### Changed
+
+- Replaced the "stop as blocked" rule in the shared AGENTS guidance and the generated Ralph instructions: a decision the PRD does not settle is made within its confirmed design decisions and recorded in `progress.txt`, and the generated instructions carry an `Authorized actions` list for external resources.
+- The Ralph runner no longer fails a run when an iteration completes no story: the uncommitted work stays in place, the next iteration continues from it, and three consecutive no-progress iterations on the same story stop the run as blocked (`RALPH_MAX_CONSECUTIVE_NO_PROGRESS`).
+- The runner records uncommitted work in `scripts/ralph/logs/leftover.txt` after no-progress iterations, policy rejections, and worker failures, and a later run resumes only when the working tree matches that record exactly.
+- The `prd` overlay requires a confirmed-decisions table and a pre-run checklist for work only a person can do; the `ralph` overlay references decisions by ID instead of copying policy text and serial gates into every story, and no longer refuses to create `prd.json` for open decisions.
+- The shared gstack guidance asks Codex to present one review section's findings in a single question call, and the global workstation-update note is reduced to the direct-install prohibition.
+
+### Added
+
+- `ralph-state.py next-story` and a distinct exit status 3 for a validated no-transition result.
+- Regressions for no-progress continuation, the no-progress breaker, the already-complete PRD, leftover resume and mismatch, and the rewritten policy texts.
+
 ## [0.3.0.0] - 2026-09-07
 
 ### Added

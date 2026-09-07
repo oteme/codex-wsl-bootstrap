@@ -3,12 +3,10 @@ Please provide all answers in Japanese
 
 ## Workstation setup updates
 
-When applying changes from `codex-wsl-bootstrap`, create and merge the PR first, then run
-the Windows `Downloads/setup-wsl.cmd` launcher (on this workstation:
-`/mnt/c/Users/reisu/Downloads/setup-wsl.cmd`). Do not copy skills into either Codex home
-or invoke `install.sh` / `scripts/install-skill.sh` directly to apply changes. The launcher's
-own internal installer calls are allowed. Do not bypass setup failures with direct installs
-or by discarding local changes. Isolated regression-test fixtures are not workstation installs.
+Do not copy skills into either Codex home or run the bootstrap's `install.sh` /
+`scripts/install-skill.sh` directly. Workstation changes are applied only by the Windows
+`Downloads/setup-wsl.cmd` launcher after the change is merged; the `codex-wsl-bootstrap`
+repository's own AGENTS.md has the full procedure.
 
 ## gstack
 
@@ -26,6 +24,11 @@ Common routing:
 - Shipping, PR, or release workflow: `gstack-ship` or `gstack-land-and-deploy`
 - Save or restore context: `gstack-context-save` or `gstack-context-restore`
 - Spec drafting: `gstack-spec`
+
+When a review section produces several findings, present them in one user-question call
+(`request_user_input`) as separate questions, each with its own recommendation and options,
+and pause once per section rather than once per finding. Findings whose options depend on an
+earlier answer are still asked one at a time.
 
 ## Ralph
 
@@ -59,8 +62,11 @@ For plans, specs, PRDs, implementations, and reviews:
 - Name the code, flags, shims, migrations, tests, and documentation that must be deleted.
 - Treat new fallback paths, compatibility shims, retained legacy branches, swallowed exceptions,
   and weakened/skipped tests as specification changes that require explicit acceptance criteria.
-- If correctness requires a product or architecture decision that is not in the requirements,
-  stop as blocked rather than inventing a compatibility or fallback policy.
+- If a decision is needed that the requirements do not settle, decide within the PRD's
+  confirmed design decisions (確定した設計判断) and Non-Goals, record the decision and its
+  basis where the work is tracked (`progress.txt` for Ralph, the plan or PRD otherwise), and
+  continue. Do not stop for a missing decision, and do not turn it into a fallback or
+  compatibility policy.
 
 For detailed explanations outside of a Decision Brief / AskUserQuestion, use an HTML artifact.
 
