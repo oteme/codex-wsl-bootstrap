@@ -85,8 +85,8 @@ replacing it. Both names in both homes are checked before registration begins. O
 servers and settings are preserved. The App registration uses the absolute WSL npx path
 and an explicit Node/npx PATH because the App server does not inherit the interactive
 shell environment. If CLI and App share a single home, the common registration uses
-this same App-safe runtime configuration. Setup must be rerun if those runtime locations change; conflicting
-existing registrations are reported rather than overwritten.
+this same App-safe runtime configuration. If runtime locations change, setup stops on
+the conflicting registration; review and resolve it explicitly before rerunning setup.
 The requested `@latest` is retained, so MCP package updates follow npm rather than the
 bootstrap release. There is no legacy MCP configuration or compatibility shim to retain. The unreleased
 single-port doctor flag is replaced by explicit port selection.
@@ -200,7 +200,7 @@ Windows and WSL have different home directories. Installing only from a WSL term
 to `/home/<user>/.codex`; the Windows App normally uses `C:\Users\<user>\.codex` while its
 agent process runs inside WSL. The one-click Windows launcher detects the installed App and
 updates both locations. App-specific configuration, authentication, sessions, and built-in
-plugins remain separate; only bootstrap-managed guidance and skills are installed in both.
+plugins remain separate; bootstrap-managed guidance, skills, hooks and Chrome MCP entries are installed in both.
 
 The internal PowerShell launcher supports `-CodexAppHome`, and its WSL installer receives
 `CODEX_APP_HOME`. These are also exercised in isolated regression fixtures. For workstation
