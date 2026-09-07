@@ -143,3 +143,16 @@ prepare_codex_app_environment
 [[ -z "$CODEX_APP_DIR" ]]
 
 printf 'PASS: Codex App home validation, model reuse, and dual registration.\n'
+
+# A shared CLI/App home still needs the App-safe executable and PATH registration.
+DRY_RUN=0
+CODEX_DIR="$app_fixture"
+CODEX_APP_HOME="$app_fixture"
+CODEX_APP_DIR=""
+python3() { printf '%s\n' "$*" >> "$TEST_ROOT/chrome-calls"; }
+install_chrome_mcp
+preflight_chrome_mcp
+[[ "$(wc -l < "$TEST_ROOT/chrome-calls")" -eq 2 ]]
+grep -Fq -- '--install --app' "$TEST_ROOT/chrome-calls"
+grep -Fq -- '--preflight --app' "$TEST_ROOT/chrome-calls"
+printf 'PASS: shared CLI/App home uses App-safe MCP registration and preflight.\n'

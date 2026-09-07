@@ -3,7 +3,7 @@
 Recreates this Codex CLI environment on another Ubuntu/WSL2 device:
 
 - Codex CLI
-- Chrome DevTools MCP for the WSL CLI, connected to `http://127.0.0.1:9222`
+- Chrome DevTools MCP for the WSL CLI and WSL-backed App, with separate ports 9222 and 9223
 - RTK 0.46.0 with a Codex-native, fail-close Safe Hook
 - Bun
 - Python 3 (used by the Ralph state gate)
@@ -50,6 +50,10 @@ installer. Windows Git is not required. When the Windows Codex App package is pr
 launcher also registers the bootstrap-managed guidance and skills in
 `C:\Users\<user>\.codex`, which is the App's `CODEX_HOME` even when agents execute in WSL.
 
+Bootstrap-managed guidance and skills are distributed to both homes (gstack skills link
+to the same source). This does not symlink the complete `config.toml`, authentication or
+sessions; managed Chrome MCP entries are now registered in each config separately.
+
 Apply repository changes only after creating and merging a PR, then rerun the Windows
 `Downloads/setup-wsl.cmd` launcher.
 
@@ -57,9 +61,17 @@ The installer is safe to rerun. It preserves unrelated content in
 `~/.codex/AGENTS.md` and refuses to overwrite unmanaged skill folders or modified source
 checkouts.
 
-## Chrome DevTools MCP (WSL CLI)
+## Chrome DevTools MCP (WSL CLI and App)
 
-Setup registers the requested command in the CLI's `CODEX_HOME`:
+Setup registers two independent servers in the CLI's `CODEX_HOME` and the detected
+Windows App home (when configured to run agents in WSL):
+
+| MCP name | Chrome port |
+| --- | --- |
+| `chrome-devtools` | 9222 |
+| `chrome-devtools-9223` | 9223 |
+
+The first server preserves the originally requested CLI command:
 
 ```bash
 codex mcp add chrome-devtools -- \
@@ -69,10 +81,15 @@ codex mcp add chrome-devtools -- \
 
 An identical registration is preserved. A disabled or differently configured server with
 that name, invalid Codex configuration, or a non-regular config file stops setup without
-replacing it. Other MCP servers and settings are preserved. This addition targets the WSL
-CLI; it does not register the server in the separate Windows App configuration.
+replacing it. Both names in both homes are checked before registration begins. Other MCP
+servers and settings are preserved. The App registration uses the absolute WSL npx path
+and an explicit Node/npx PATH because the App server does not inherit the interactive
+shell environment. If CLI and App share a single home, the common registration uses
+this same App-safe runtime configuration. Setup must be rerun if those runtime locations change; conflicting
+existing registrations are reported rather than overwritten.
 The requested `@latest` is retained, so MCP package updates follow npm rather than the
-bootstrap release. There is no legacy MCP configuration or compatibility shim to retain.
+bootstrap release. There is no legacy MCP configuration or compatibility shim to retain. The unreleased
+single-port doctor flag is replaced by explicit port selection.
 
 Setup uses an existing working Node runtime (20.19+, 22.12+, or 23+) and npx.
 If Node is absent, it installs checksum-verified Node 22.23.2 for Linux x64/arm64 and
@@ -85,15 +102,23 @@ To start the browser on Windows:
 1. Install Google Chrome and enable `networkingMode=mirrored` in the `[wsl2]` section
    of `%USERPROFILE%\.wslconfig`. Apply WSL changes by restarting WSL after saving work.
 2. Download [start-chrome-devtools.cmd](https://github.com/oteme/codex-wsl-bootstrap/raw/main/start-chrome-devtools.cmd)
-   to Downloads and run it. It uses a dedicated `%LOCALAPPDATA%\CodexChromeDevTools`
-   profile and port 9222. Setup does not change WSL networking or launch Chrome automatically.
-3. In WSL, run `bash ~/.local/share/codex-wsl-bootstrap/doctor.sh --check-browser`.
+   to Downloads. Double-click it for 9222, or run `start-chrome-devtools.cmd 9223`
+   from a Windows terminal for the second profile. They use separate
+   `%LOCALAPPDATA%\CodexChromeDevTools-9222` and `CodexChromeDevTools-9223` directories.
+   Ports other than 9222/9223 are rejected. Setup does not change WSL networking or
+   launch Chrome automatically.
+3. In WSL, run `bash ~/.local/share/codex-wsl-bootstrap/doctor.sh --check-browser=9222`
+   (or `--check-browser=9223` to check the second browser).
    Connection refusal, malformed responses and unexpected endpoints fail; no alternate
    browser or address is tried.
-4. Restart Codex CLI and ask it to list the open Chrome pages.
+4. Restart Codex CLI and reload MCP servers in Codex App (or restart the App). Ask it
+   to list pages using `chrome-devtools` or `chrome-devtools-9223` as appropriate.
 
 The default setup doctor checks registration and runtime only. Passing setup does not mean
-Chrome is running; `--check-browser` separately verifies the live DevTools endpoint.
+Chrome is running; `--check-browser=9222` / `--check-browser=9223` verifies only the selected live endpoint.
+Either browser can be closed when not in use; a tool call to its server then fails explicitly
+instead of connecting to the other profile. Add `CODEX_APP_HOME=/mnt/c/Users/<user>/.codex`
+when running doctor manually to include App registration checks.
 Chrome pages in this dedicated profile are accessible to the agent through MCP.
 
 References: [Codex MCP](https://developers.openai.com/codex/mcp),
