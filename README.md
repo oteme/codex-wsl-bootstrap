@@ -3,6 +3,7 @@
 Recreates this Codex CLI environment on another Ubuntu/WSL2 device:
 
 - Codex CLI
+- Chrome DevTools MCP for the WSL CLI, connected to `http://127.0.0.1:9222`
 - RTK 0.46.0 with a Codex-native, fail-close Safe Hook
 - Bun
 - Python 3 (used by the Ralph state gate)
@@ -49,17 +50,54 @@ installer. Windows Git is not required. When the Windows Codex App package is pr
 launcher also registers the bootstrap-managed guidance and skills in
 `C:\Users\<user>\.codex`, which is the App's `CODEX_HOME` even when agents execute in WSL.
 
-To install directly from an Ubuntu/WSL terminal, run:
-
-```bash
-git clone https://github.com/oteme/codex-wsl-bootstrap.git \
-  ~/.local/share/codex-wsl-bootstrap
-bash ~/.local/share/codex-wsl-bootstrap/install.sh
-```
+Apply repository changes only after creating and merging a PR, then rerun the Windows
+`Downloads/setup-wsl.cmd` launcher.
 
 The installer is safe to rerun. It preserves unrelated content in
 `~/.codex/AGENTS.md` and refuses to overwrite unmanaged skill folders or modified source
 checkouts.
+
+## Chrome DevTools MCP (WSL CLI)
+
+Setup registers the requested command in the CLI's `CODEX_HOME`:
+
+```bash
+codex mcp add chrome-devtools -- \
+  npx -y chrome-devtools-mcp@latest \
+  --browser-url=http://127.0.0.1:9222
+```
+
+An identical registration is preserved. A disabled or differently configured server with
+that name, invalid Codex configuration, or a non-regular config file stops setup without
+replacing it. Other MCP servers and settings are preserved. This addition targets the WSL
+CLI; it does not register the server in the separate Windows App configuration.
+The requested `@latest` is retained, so MCP package updates follow npm rather than the
+bootstrap release. There is no legacy MCP configuration or compatibility shim to retain.
+
+Setup uses an existing working Node runtime (20.19+, 22.12+, or 23+) and npx.
+If Node is absent, it installs checksum-verified Node 22.23.2 for Linux x64/arm64 and
+links node/npm/npx into `~/.local/bin`. An incompatible existing runtime, broken npx,
+or an occupied installation target fails explicitly; setup does not replace user runtimes.
+Ensure `~/.local/bin` is on PATH when starting Codex from a new shell.
+
+To start the browser on Windows:
+
+1. Install Google Chrome and enable `networkingMode=mirrored` in the `[wsl2]` section
+   of `%USERPROFILE%\.wslconfig`. Apply WSL changes by restarting WSL after saving work.
+2. Download [start-chrome-devtools.cmd](https://github.com/oteme/codex-wsl-bootstrap/raw/main/start-chrome-devtools.cmd)
+   to Downloads and run it. It uses a dedicated `%LOCALAPPDATA%\CodexChromeDevTools`
+   profile and port 9222. Setup does not change WSL networking or launch Chrome automatically.
+3. In WSL, run `bash ~/.local/share/codex-wsl-bootstrap/doctor.sh --check-browser`.
+   Connection refusal, malformed responses and unexpected endpoints fail; no alternate
+   browser or address is tried.
+4. Restart Codex CLI and ask it to list the open Chrome pages.
+
+The default setup doctor checks registration and runtime only. Passing setup does not mean
+Chrome is running; `--check-browser` separately verifies the live DevTools endpoint.
+Chrome pages in this dedicated profile are accessible to the agent through MCP.
+
+References: [Codex MCP](https://developers.openai.com/codex/mcp),
+[Chrome MCP WSL guidance](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/troubleshooting.md).
 
 ## Ralph policy gate
 

@@ -83,7 +83,7 @@ ensure_ubuntu_wsl() {
 ensure_base_tools() {
   local missing=()
   local tool
-  for tool in curl git python3; do
+  for tool in curl git python3 xz; do
     command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
   done
   [[ "${#missing[@]}" -eq 0 ]] && return
@@ -98,7 +98,7 @@ ensure_base_tools() {
     sudo_cmd=(sudo)
   fi
   run "${sudo_cmd[@]}" apt-get update
-  run "${sudo_cmd[@]}" apt-get install -y ca-certificates curl git python3
+  run "${sudo_cmd[@]}" apt-get install -y ca-certificates curl git python3 xz-utils
 }
 
 download_and_run() {
@@ -523,6 +523,14 @@ preflight_codex_app_environment() {
   validate_app_install_targets "$CODEX_APP_DIR"
 }
 
+install_chrome_mcp() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "Would register chrome-devtools MCP for CLI: $CODEX_DIR"
+    return
+  fi
+  python3 "$SCRIPT_DIR/scripts/chrome-devtools-mcp.py" --codex-home "$CODEX_DIR" --install
+}
+
 main() {
   ensure_ubuntu_wsl
   prepare_codex_app_environment
@@ -533,6 +541,9 @@ main() {
   ensure_codex
   ensure_rtk
   ensure_bun
+  source "$SCRIPT_DIR/scripts/ensure-node.sh"
+  ensure_chrome_node
+  install_chrome_mcp
   run mkdir -p "$SKILLS_DIR"
   install_gstack
   install_ralph

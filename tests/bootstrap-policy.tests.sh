@@ -109,10 +109,15 @@ printf '%s\n' \
 test_bin="$TEST_ROOT/bin"
 mkdir -p "$test_bin"
 # Doctor's policy fixtures must not depend on workstation-installed CLIs.
-for tool in codex bun; do
+for tool in codex bun node npx; do
   cat > "$test_bin/$tool" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == mcp && "${2:-}" == list && "${3:-}" == --json ]]; then
+  printf '%s\n' '[{"name":"chrome-devtools","enabled":true,"transport":{"type":"stdio","command":"npx","args":["-y","chrome-devtools-mcp@latest","--browser-url=http://127.0.0.1:9222"],"env":null,"env_vars":[],"cwd":null}}]'
+  exit 0
+fi
+if [[ "${1:-}" == -e ]]; then exit 0; fi
 [[ "$#" -eq 1 && "$1" == --version ]]
 printf 'fixture-version\n'
 EOF

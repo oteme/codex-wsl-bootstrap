@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.0.0] - 2026-09-07
+
+### Added
+
+- Register Chrome DevTools MCP in the WSL CLI with the requested npx/latest command and localhost port 9222, preserving identical registrations and rejecting conflicts.
+- Prepare Node.js/npx, installing checksum-verified Node 22.23.2 only when Node is absent; reject incompatible user runtimes and occupied targets.
+- Add a Windows Chrome launcher with a dedicated profile and optional live connection verification in doctor.
+- Cover MCP configuration preservation, invalid configuration diagnostics, Node installation guards and isolated first-install/reinstall fixtures.
+
+### Changed
+
+- Document the Chrome startup requirements and distinguish installation checks from live browser connectivity.
+- Remove direct-install instructions in favor of the required merge-then-Windows-launcher route.
+
 ## [0.2.2.0] - 2026-09-07
 
 ### Fixed
