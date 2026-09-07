@@ -3,14 +3,22 @@ set -euo pipefail
 
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 SKILLS_DIR="$CODEX_DIR/skills"
+if ! command -v node >/dev/null || ! command -v npx >/dev/null; then
+  export PATH="$HOME/.local/bin:$PATH"
+fi
 failures=0
 skip_login=0
+check_browser=0
 
-case "${1:-}" in
+for arg in "$@"; do
+case "$arg" in
   "") ;;
   --skip-login) skip_login=1 ;;
-  *) echo "Usage: ./doctor.sh [--skip-login]" >&2; exit 2 ;;
+  --check-browser=9222) check_browser=9222 ;;
+  --check-browser=9223) check_browser=9223 ;;
+  *) echo "Usage: ./doctor.sh [--skip-login] [--check-browser=9222|--check-browser=9223]" >&2; exit 2 ;;
 esac
+done
 
 pass() { printf 'ok   %s\n' "$1"; }
 fail() { printf 'fail %s\n' "$1" >&2; failures=$((failures + 1)); }
@@ -118,10 +126,24 @@ check_command git
 check_command python3
 check_command rtk
 
+source "$(dirname "${BASH_SOURCE[0]}")/scripts/ensure-node.sh"
+if validate_chrome_node; then pass "Chrome MCP Node runtime"; else fail "Chrome MCP Node runtime"; fi
+chrome_args=(--codex-home "$CODEX_DIR")
+if [[ -n "${CODEX_APP_HOME:-}" && "$(realpath -m "$CODEX_DIR")" == "$(realpath -m "$CODEX_APP_HOME")" ]]; then
+  chrome_args+=(--app)
+fi
+[[ "$check_browser" -eq 0 ]] || chrome_args+=(--check-browser "$check_browser")
+if ! python3 "$(dirname "${BASH_SOURCE[0]}")/scripts/chrome-devtools-mcp.py" "${chrome_args[@]}"; then
+  fail "Chrome MCP verification"
+fi
+
 check_codex_home "$CODEX_DIR" "CLI "
 
 if [[ -n "${CODEX_APP_HOME:-}" ]] && [[ "$(realpath -m "$CODEX_APP_HOME")" != "$(realpath -m "$CODEX_DIR")" ]]; then
   check_codex_home "$(realpath -m "$CODEX_APP_HOME")" "App "
+  if ! python3 "$(dirname "${BASH_SOURCE[0]}")/scripts/chrome-devtools-mcp.py" --codex-home "$CODEX_APP_HOME" --app; then
+    fail "App Chrome MCP verification"
+  fi
 fi
 
 if [[ "$skip_login" -eq 0 ]]; then
@@ -137,4 +159,8 @@ if [[ "$failures" -gt 0 ]]; then
   exit 1
 fi
 
-printf '\nEverything is ready.\n'
+if [[ "$check_browser" -eq 0 ]]; then
+  printf '\nSetup checks passed. Live Chrome connection was not checked; run doctor.sh --check-browser=9222 or --check-browser=9223 after starting that profile.\n'
+else
+  printf '\nEverything is ready, including the Chrome connection.\n'
+fi

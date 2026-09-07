@@ -109,10 +109,23 @@ printf '%s\n' \
 test_bin="$TEST_ROOT/bin"
 mkdir -p "$test_bin"
 # Doctor's policy fixtures must not depend on workstation-installed CLIs.
-for tool in codex bun; do
+for tool in codex bun node npx; do
   cat > "$test_bin/$tool" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == mcp && "${2:-}" == list && "${3:-}" == --json ]]; then
+  python3 - <<'PYTHON'
+import json, os, shutil
+from pathlib import Path
+app = os.environ.get("CODEX_APP_HOME") == os.environ.get("CODEX_HOME")
+search = str(Path.home() / ".local/bin") + ":" + os.environ["PATH"]
+npx, node = shutil.which("npx", path=search), shutil.which("node", path=search)
+app_path = ":".join(dict.fromkeys([str(Path(node).parent), str(Path(npx).parent), "/usr/local/bin", "/usr/bin", "/bin"]))
+print(json.dumps([{"name":name,"enabled":True,"transport":{"type":"stdio","command":npx if app else "npx","args":["-y","chrome-devtools-mcp@latest",f"--browser-url=http://127.0.0.1:{port}"],"env":{"PATH":app_path} if app else None,"env_vars":[],"cwd":None}} for name,port in [("chrome-devtools",9222),("chrome-devtools-9223",9223)]]))
+PYTHON
+  exit 0
+fi
+if [[ "${1:-}" == -e ]]; then exit 0; fi
 [[ "$#" -eq 1 && "$1" == --version ]]
 printf 'fixture-version\n'
 EOF

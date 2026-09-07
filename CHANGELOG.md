@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.3.0.0] - 2026-09-07
+
+### Added
+
+- Register Chrome DevTools MCP in the WSL CLI and WSL-backed App with separate localhost ports 9222 and 9223, preserving identical registrations and rejecting conflicts.
+- Prepare Node.js/npx, installing checksum-verified Node 22.23.2 only when Node is absent; reject incompatible user runtimes and occupied targets.
+- Add a Windows Chrome launcher with separate profiles for 9222/9223 and per-port live connection verification in doctor.
+- Pin the App MCP executable path and Node PATH to setup-resolved WSL tools, avoiding the App server's missing interactive shell PATH.
+- Cover MCP configuration preservation, invalid configuration diagnostics, Node installation guards and isolated first-install/reinstall fixtures.
+
+### Changed
+
+- Document the Chrome startup requirements and distinguish installation checks from live browser connectivity.
+- Remove direct-install instructions in favor of the required merge-then-Windows-launcher route.
+
 ## [0.2.2.0] - 2026-09-07
 
 ### Fixed

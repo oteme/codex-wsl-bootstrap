@@ -83,7 +83,7 @@ ensure_ubuntu_wsl() {
 ensure_base_tools() {
   local missing=()
   local tool
-  for tool in curl git python3; do
+  for tool in curl git python3 xz; do
     command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
   done
   [[ "${#missing[@]}" -eq 0 ]] && return
@@ -98,7 +98,7 @@ ensure_base_tools() {
     sudo_cmd=(sudo)
   fi
   run "${sudo_cmd[@]}" apt-get update
-  run "${sudo_cmd[@]}" apt-get install -y ca-certificates curl git python3
+  run "${sudo_cmd[@]}" apt-get install -y ca-certificates curl git python3 xz-utils
 }
 
 download_and_run() {
@@ -500,6 +500,7 @@ install_codex_app_environment() {
   install_local_skills "$CODEX_APP_DIR"
   install_agents_guidance "$CODEX_APP_DIR"
   install_rtk_hook "$CODEX_APP_DIR"
+  install_chrome_mcp "$CODEX_APP_DIR" --app
 }
 
 prepare_codex_app_environment() {
@@ -523,6 +524,33 @@ preflight_codex_app_environment() {
   validate_app_install_targets "$CODEX_APP_DIR"
 }
 
+install_chrome_mcp() {
+  local target_codex_dir="${1:-$CODEX_DIR}"
+  local mode="${2:-}"
+  if [[ -n "${CODEX_APP_HOME:-}" && "$(realpath -m "$target_codex_dir")" == "$(realpath -m "$CODEX_APP_HOME")" ]]; then
+    mode=--app
+  fi
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "Would register Chrome MCP ports 9222 + 9223: $target_codex_dir"
+    return
+  fi
+  local args=(--codex-home "$target_codex_dir" --install)
+  [[ -z "$mode" ]] || args+=("$mode")
+  python3 "$SCRIPT_DIR/scripts/chrome-devtools-mcp.py" "${args[@]}"
+}
+
+preflight_chrome_mcp() {
+  [[ "$DRY_RUN" -eq 0 ]] || return 0
+  local args=(--codex-home "$CODEX_DIR" --preflight)
+  if [[ -n "${CODEX_APP_HOME:-}" && "$(realpath -m "$CODEX_DIR")" == "$(realpath -m "$CODEX_APP_HOME")" ]]; then
+    args+=(--app)
+  fi
+  python3 "$SCRIPT_DIR/scripts/chrome-devtools-mcp.py" "${args[@]}"
+  if [[ -n "$CODEX_APP_DIR" ]]; then
+    python3 "$SCRIPT_DIR/scripts/chrome-devtools-mcp.py" --codex-home "$CODEX_APP_DIR" --app --preflight
+  fi
+}
+
 main() {
   ensure_ubuntu_wsl
   prepare_codex_app_environment
@@ -533,6 +561,10 @@ main() {
   ensure_codex
   ensure_rtk
   ensure_bun
+  source "$SCRIPT_DIR/scripts/ensure-node.sh"
+  ensure_chrome_node
+  preflight_chrome_mcp
+  install_chrome_mcp
   run mkdir -p "$SKILLS_DIR"
   install_gstack
   install_ralph

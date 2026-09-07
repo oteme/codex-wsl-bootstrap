@@ -3,6 +3,7 @@
 Recreates this Codex CLI environment on another Ubuntu/WSL2 device:
 
 - Codex CLI
+- Chrome DevTools MCP for the WSL CLI and WSL-backed App, with separate ports 9222 and 9223
 - RTK 0.46.0 with a Codex-native, fail-close Safe Hook
 - Bun
 - Python 3 (used by the Ralph state gate)
@@ -49,17 +50,79 @@ installer. Windows Git is not required. When the Windows Codex App package is pr
 launcher also registers the bootstrap-managed guidance and skills in
 `C:\Users\<user>\.codex`, which is the App's `CODEX_HOME` even when agents execute in WSL.
 
-To install directly from an Ubuntu/WSL terminal, run:
+Bootstrap-managed guidance and skills are distributed to both homes (gstack skills link
+to the same source). This does not symlink the complete `config.toml`, authentication or
+sessions; managed Chrome MCP entries are now registered in each config separately.
 
-```bash
-git clone https://github.com/oteme/codex-wsl-bootstrap.git \
-  ~/.local/share/codex-wsl-bootstrap
-bash ~/.local/share/codex-wsl-bootstrap/install.sh
-```
+Apply repository changes only after creating and merging a PR, then rerun the Windows
+`Downloads/setup-wsl.cmd` launcher.
 
 The installer is safe to rerun. It preserves unrelated content in
 `~/.codex/AGENTS.md` and refuses to overwrite unmanaged skill folders or modified source
 checkouts.
+
+## Chrome DevTools MCP (WSL CLI and App)
+
+Setup registers two independent servers in the CLI's `CODEX_HOME` and the detected
+Windows App home (when configured to run agents in WSL):
+
+| MCP name | Chrome port |
+| --- | --- |
+| `chrome-devtools` | 9222 |
+| `chrome-devtools-9223` | 9223 |
+
+The first server preserves the originally requested CLI command:
+
+```bash
+codex mcp add chrome-devtools -- \
+  npx -y chrome-devtools-mcp@latest \
+  --browser-url=http://127.0.0.1:9222
+```
+
+An identical registration is preserved. A disabled or differently configured server with
+that name, invalid Codex configuration, or a non-regular config file stops setup without
+replacing it. Both names in both homes are checked before registration begins. Other MCP
+servers and settings are preserved. The App registration uses the absolute WSL npx path
+and an explicit Node/npx PATH because the App server does not inherit the interactive
+shell environment. If CLI and App share a single home, the common registration uses
+this same App-safe runtime configuration. If runtime locations change, setup stops on
+the conflicting registration; review and resolve it explicitly before rerunning setup.
+The requested `@latest` is retained, so MCP package updates follow npm rather than the
+bootstrap release. There is no legacy MCP configuration or compatibility shim to retain. The unreleased
+single-port doctor flag is replaced by explicit port selection.
+
+Setup uses an existing working Node runtime (20.19+, 22.12+, or 23+) and npx.
+If Node is absent, it installs checksum-verified Node 22.23.2 for Linux x64/arm64 and
+links node/npm/npx into `~/.local/bin`. An incompatible existing runtime, broken npx,
+or an occupied installation target fails explicitly; setup does not replace user runtimes.
+Ensure `~/.local/bin` is on PATH when starting Codex from a new shell.
+
+To start the browser on Windows:
+
+1. Install Google Chrome and enable `networkingMode=mirrored` in the `[wsl2]` section
+   of `%USERPROFILE%\.wslconfig`. Apply WSL changes by restarting WSL after saving work.
+2. Download [start-chrome-devtools.cmd](https://github.com/oteme/codex-wsl-bootstrap/raw/main/start-chrome-devtools.cmd)
+   to Downloads. Double-click it for 9222, or run `start-chrome-devtools.cmd 9223`
+   from a Windows terminal for the second profile. They use separate
+   `%LOCALAPPDATA%\CodexChromeDevTools-9222` and `CodexChromeDevTools-9223` directories.
+   Ports other than 9222/9223 are rejected. Setup does not change WSL networking or
+   launch Chrome automatically.
+3. In WSL, run `bash ~/.local/share/codex-wsl-bootstrap/doctor.sh --check-browser=9222`
+   (or `--check-browser=9223` to check the second browser).
+   Connection refusal, malformed responses and unexpected endpoints fail; no alternate
+   browser or address is tried.
+4. Restart Codex CLI and reload MCP servers in Codex App (or restart the App). Ask it
+   to list pages using `chrome-devtools` or `chrome-devtools-9223` as appropriate.
+
+The default setup doctor checks registration and runtime only. Passing setup does not mean
+Chrome is running; `--check-browser=9222` / `--check-browser=9223` verifies only the selected live endpoint.
+Either browser can be closed when not in use; a tool call to its server then fails explicitly
+instead of connecting to the other profile. Add `CODEX_APP_HOME=/mnt/c/Users/<user>/.codex`
+when running doctor manually to include App registration checks.
+Chrome pages in this dedicated profile are accessible to the agent through MCP.
+
+References: [Codex MCP](https://developers.openai.com/codex/mcp),
+[Chrome MCP WSL guidance](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/troubleshooting.md).
 
 ## Ralph policy gate
 
@@ -137,22 +200,11 @@ Windows and WSL have different home directories. Installing only from a WSL term
 to `/home/<user>/.codex`; the Windows App normally uses `C:\Users\<user>\.codex` while its
 agent process runs inside WSL. The one-click Windows launcher detects the installed App and
 updates both locations. App-specific configuration, authentication, sessions, and built-in
-plugins remain separate; only bootstrap-managed guidance and skills are installed in both.
+plugins remain separate; bootstrap-managed guidance, skills, hooks and Chrome MCP entries are installed in both.
 
-If you run the PowerShell launcher directly and need to override App detection, pass the Windows
-profile path explicitly:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup-wsl.ps1 `
-  -CodexAppHome 'C:\Users\<user>\.codex'
-```
-
-Direct WSL installs cannot reliably detect whether the Windows App package is installed. To
-target it explicitly, pass its Windows profile directory as a WSL path:
-
-```bash
-CODEX_APP_HOME=/mnt/c/Users/<user>/.codex ./install.sh
-```
+The internal PowerShell launcher supports `-CodexAppHome`, and its WSL installer receives
+`CODEX_APP_HOME`. These are also exercised in isolated regression fixtures. For workstation
+setup, use `Downloads/setup-wsl.cmd` so App detection and path conversion run together.
 
 Invalid App paths and unmanaged skill collisions fail closed. The installer does not add a
 Windows-native fallback: App sharing requires its WSL execution mode.
@@ -161,25 +213,17 @@ The bootstrap keeps its pinned gstack checkout under
 `~/.local/share/codex-workstation-bootstrap/gstack`. A separate `~/gstack` checkout is left
 untouched, including the generated `gstack-*` skill-name patches that gstack may keep there.
 
-To relocate both bootstrap-managed source checkouts, set the shared state directory:
-
-```bash
-BOOTSTRAP_STATE_DIR=/path/to/bootstrap-state ./install.sh
-```
-
-`GSTACK_INSTALL_DIR` and `RALPH_SOURCE_DIR` still override their individual checkout locations.
+The internal installer supports `BOOTSTRAP_STATE_DIR` for the shared source directory;
+`GSTACK_INSTALL_DIR` and `RALPH_SOURCE_DIR` override their individual checkout locations.
+Regression fixtures exercise these overrides in temporary directories. Workstation changes
+must be delivered through a merged PR and `Downloads/setup-wsl.cmd`.
 
 ## Update pinned versions
 
 The default gstack and Ralph commits and the RTK release/checksums are pinned in `install.sh`
-for reproducible setup.
-You can test newer revisions without editing the file:
-
-```bash
-GSTACK_REF=<commit> RALPH_REF=<commit> ./install.sh
-```
-
-After verification, update the corresponding pinned constants and RTK checksums in `install.sh`.
+for reproducible setup. Node's release and checksums are pinned in `scripts/ensure-node.sh`.
+Test proposed pins using isolated regression fixtures, then update the corresponding constants
+and checksums in a PR. After merging, apply them with `Downloads/setup-wsl.cmd`.
 
 ## Security boundary
 
