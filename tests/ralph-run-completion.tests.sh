@@ -146,6 +146,20 @@ with open(path, "w", encoding="utf-8") as handle:
     handle.write("\n")
 PY
     printf 'implementation attempt\n' >> "$codex_cwd/app.txt"
+    if [[ "$MOCK_MODE" == "metadata" ]]; then
+      python3 - "$codex_cwd/scripts/ralph/prd.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    document = json.load(handle)
+document["description"] = "progress note written by the worker"
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(document, handle, indent=2)
+    handle.write("\n")
+PY
+    fi
     if [[ "$MOCK_MODE" == "worker-commit" ]]; then
       git -C "$codex_cwd" add -A
       git -C "$codex_cwd" commit -qm 'unauthorized worker commit'
@@ -483,6 +497,31 @@ git -C "$progress_later_root" show HEAD:app.txt | grep -Fq 'partial work'
 git -C "$progress_later_root" show HEAD:app.txt | grep -Fq 'implementation attempt'
 [[ ! -e "$progress_later_root/scripts/ralph/logs/leftover.txt" ]]
 [[ -z "$(git -C "$progress_later_root" status --porcelain)" ]]
+
+metadata_root="$TEST_ROOT/metadata"
+make_fixture "$metadata_root"
+cp "$metadata_root/scripts/ralph/prd.json" "$TEST_ROOT/metadata-before.json"
+export MOCK_MODE="metadata"
+export MOCK_CALLS_FILE="$TEST_ROOT/metadata-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/metadata-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+set +e
+metadata_output="$(cd "$metadata_root" && bash "$RUNNER" 2 2>&1)"
+metadata_status=$?
+set -e
+[[ "$metadata_status" -eq 1 ]]
+grep -Fq 'worker changed PRD metadata' <<< "$metadata_output"
+grep -Fq 'did not produce one valid story transition' <<< "$metadata_output"
+grep -Fq 'change only the completed story'"'"'s passes and notes' "$MOCK_PROMPTS_FILE"
+cmp "$TEST_ROOT/metadata-before.json" "$metadata_root/scripts/ralph/prd.json"
+grep -Fq 'app.txt' "$metadata_root/scripts/ralph/logs/leftover.txt"
+[[ "$(grep -c '^review$' "$MOCK_CALLS_FILE" || true)" -eq 0 ]]
+export MOCK_MODE="approve"
+metadata_resume_output="$(cd "$metadata_root" && bash "$RUNNER" 1)"
+grep -Fq 'resuming uncommitted work left by the previous run' <<< "$metadata_resume_output"
+grep -Fq 'completed=1' <<< "$metadata_resume_output"
+[[ ! -e "$metadata_root/scripts/ralph/logs/leftover.txt" ]]
 
 already_done_root="$TEST_ROOT/already-done"
 make_fixture "$already_done_root"
