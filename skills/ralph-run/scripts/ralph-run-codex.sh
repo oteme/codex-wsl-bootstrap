@@ -13,7 +13,11 @@ Environment:
   RALPH_MAX_CONSECUTIVE_REJECTIONS: stop after this many policy rejections for
                                     the same story (default: 3)
   RALPH_MAX_CONSECUTIVE_NO_PROGRESS: stop after this many consecutive iterations
-                                     that complete no story (default: 3)
+                                     that leave the work outside scripts/ralph
+                                     and docs/ unchanged (default: 3)
+  RALPH_MAX_CONSECUTIVE_INCOMPLETE: stop after this many consecutive iterations
+                                    on the same story without completing it
+                                    (default: 10)
 EOF
 }
 
@@ -31,6 +35,7 @@ MAX_ITER="${1:-0}"
 RALPH_DIR_INPUT="${2:-"$PWD/scripts/ralph"}"
 MAX_CONSECUTIVE_REJECTIONS="${RALPH_MAX_CONSECUTIVE_REJECTIONS:-3}"
 MAX_CONSECUTIVE_NO_PROGRESS="${RALPH_MAX_CONSECUTIVE_NO_PROGRESS:-3}"
+MAX_CONSECUTIVE_INCOMPLETE="${RALPH_MAX_CONSECUTIVE_INCOMPLETE:-10}"
 
 if ! [[ "$MAX_ITER" =~ ^[0-9]+$ ]]; then
   echo "error: max-iterations must be a non-negative integer; omit it or use 0 to run until complete" >&2
@@ -46,6 +51,12 @@ fi
 if ! [[ "$MAX_CONSECUTIVE_NO_PROGRESS" =~ ^[0-9]+$ ]] \
   || [[ "$MAX_CONSECUTIVE_NO_PROGRESS" -lt 1 ]]; then
   echo "error: RALPH_MAX_CONSECUTIVE_NO_PROGRESS must be a positive integer" >&2
+  exit 2
+fi
+
+if ! [[ "$MAX_CONSECUTIVE_INCOMPLETE" =~ ^[0-9]+$ ]] \
+  || [[ "$MAX_CONSECUTIVE_INCOMPLETE" -lt 1 ]]; then
+  echo "error: RALPH_MAX_CONSECUTIVE_INCOMPLETE must be a positive integer" >&2
   exit 2
 fi
 
@@ -190,6 +201,21 @@ record_leftover() {
   fi
 }
 
+# Content hash of the worker's uncommitted work outside the Ralph directory and docs/. An
+# iteration whose hash does not change made no progress; one that changes it did, even when the
+# story is not complete yet.
+work_hash_now() {
+  {
+    git -C "$PROJECT_ROOT" diff HEAD -- . ":(exclude)$RALPH_REL" ":(exclude)docs"
+    git -C "$PROJECT_ROOT" ls-files --others --exclude-standard -z | while IFS= read -r -d '' path; do
+      case "$path" in
+        "$RALPH_REL"/*|docs/*) ;;
+        *) printf '%s\0' "$path"; cat -- "$PROJECT_ROOT/$path"; printf '\0' ;;
+      esac
+    done
+  } | sha256sum | awk '{print $1}'
+}
+
 # prd.json/progress.txt are commonly created immediately before the first run. Permit bootstrap
 # metadata there, but never absorb unrelated application changes into a Ralph story commit.
 # Work recorded by the previous runner exit is resumed only when it matches exactly.
@@ -214,8 +240,9 @@ iterations_run=0
 retry_story_id=""
 rejection_story_id=""
 consecutive_rejections=0
-no_progress_story_id=""
+incomplete_story_id=""
 consecutive_no_progress=0
+consecutive_incomplete=0
 
 for ((i = 1; MAX_ITER == 0 || i <= MAX_ITER; i++)); do
   iterations_run="$i"
@@ -245,20 +272,21 @@ for ((i = 1; MAX_ITER == 0 || i <= MAX_ITER; i++)); do
 
   resume_note=""
   if [[ -n "$(outside_changes_now)" ]]; then
-    resume_note="Uncommitted work for story $EXPECTED_STORY_ID from a previous iteration is present in the working tree. Continue from it; do not discard or redo it."
+    resume_note="Uncommitted work for story $EXPECTED_STORY_ID from a previous turn is present in the working tree. Continue from it; do not discard or redo it."
   fi
+  pre_work_hash="$(work_hash_now)"
 
   prompt=$(cat <<EOF
-You are the implementation worker for exactly one Ralph iteration.
+You are the implementation worker for one Ralph story.
 
 Do the implementation work directly in the project. Do not invoke the ralph-run skill, do not run ralph-run-codex.sh, and do not launch another codex exec or autonomous loop.
 
 Read the file $RALPH_DIR/CLAUDE.md in full and execute its instructions exactly as written.
 
-That file is your complete and authoritative task specification for this iteration. The prd.json and progress.txt it refers to live in the same directory:
+That file is your complete and authoritative task specification. The prd.json and progress.txt it refers to live in the same directory:
 $RALPH_DIR
 
-Run one Ralph iteration only. Update prd.json and progress.txt according to the instructions. In prd.json change only the completed story's passes and notes fields; any other edit, including the top-level description, is rejected by the outer runner. Do not commit and do not claim that the whole run is complete; the outer runner owns review, commit, and completion.
+Complete the selected story in this turn: keep working until its acceptance criteria and checks pass and you have set its passes to true. Do not stop part-way to hand work to a later turn. In prd.json change only the completed story's passes and notes fields; any other edit, including the top-level description, is rejected by the outer runner. Do not commit and do not claim that the whole run is complete; the outer runner owns review, commit, and completion.
 $resume_note
 EOF
 )
@@ -309,18 +337,32 @@ EOF
   set -e
 
   if [[ "$transition_status" -eq 3 ]]; then
-    # The worker changed only notes and progress. Keep its work in the tree for the next
-    # iteration instead of failing the run; repeated no-progress on one story stops as blocked.
+    # The story is not complete. Keep the work in the tree for the next iteration instead of
+    # failing the run. Iterations that change nothing outside scripts/ralph and docs/ count as
+    # no progress; a separate cap bounds how long one story may stay incomplete.
     record_leftover
-    if [[ "$no_progress_story_id" == "$EXPECTED_STORY_ID" ]]; then
+    post_work_hash="$(work_hash_now)"
+    if [[ "$incomplete_story_id" == "$EXPECTED_STORY_ID" ]]; then
+      consecutive_incomplete=$((consecutive_incomplete + 1))
+    else
+      incomplete_story_id="$EXPECTED_STORY_ID"
+      consecutive_incomplete=1
+      consecutive_no_progress=0
+    fi
+    if [[ "$post_work_hash" == "$pre_work_hash" ]]; then
       consecutive_no_progress=$((consecutive_no_progress + 1))
     else
-      no_progress_story_id="$EXPECTED_STORY_ID"
-      consecutive_no_progress=1
+      consecutive_no_progress=0
     fi
     if [[ "$consecutive_no_progress" -ge "$MAX_CONSECUTIVE_NO_PROGRESS" ]]; then
       blocked=1
-      echo "error: no story was completed in $consecutive_no_progress consecutive iterations on $EXPECTED_STORY_ID; stopping as blocked" >&2
+      echo "error: no progress in $consecutive_no_progress consecutive iterations on $EXPECTED_STORY_ID; stopping as blocked" >&2
+      echo "Inspect $PROGRESS_FILE and the uncommitted work recorded in $LEFTOVER_FILE." >&2
+      break
+    fi
+    if [[ "$consecutive_incomplete" -ge "$MAX_CONSECUTIVE_INCOMPLETE" ]]; then
+      blocked=1
+      echo "error: $EXPECTED_STORY_ID was not completed in $consecutive_incomplete consecutive iterations; stopping as blocked" >&2
       echo "Inspect $PROGRESS_FILE and the uncommitted work recorded in $LEFTOVER_FILE." >&2
       break
     fi
@@ -586,8 +628,9 @@ EOF
   retry_story_id=""
   rejection_story_id=""
   consecutive_rejections=0
-  no_progress_story_id=""
+  incomplete_story_id=""
   consecutive_no_progress=0
+  consecutive_incomplete=0
   rm -f "$LEFTOVER_FILE"
 
   if [[ "$(python3 "$STATE_TOOL" all-passed "$RALPH_DIR/prd.json")" == "true" ]]; then
@@ -600,7 +643,7 @@ EOF
 done
 
 if [[ "$blocked" -eq 1 ]]; then
-  echo "Ralph stopped as blocked: the current story was rejected or completed nothing repeatedly."
+  echo "Ralph stopped as blocked: the current story was rejected repeatedly, made no progress, or stayed incomplete too long."
 elif [[ "$completed" -eq 0 && "$MAX_ITER" -gt 0 ]]; then
   echo "Ralph reached max iterations ($MAX_ITER) without completing all tasks."
 fi

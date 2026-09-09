@@ -43,7 +43,8 @@ You are an autonomous coding agent working on a software project.
 2. Read the progress log at `progress.txt` (check Codebase Patterns section first)
 3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.
 4. Pick the highest priority user story where `passes: false`
-5. Implement that single user story
+5. Implement that single user story completely. Keep working in this turn until its acceptance
+   criteria and checks pass
 6. Run quality checks (typecheck, lint, test, or whatever this project requires)
 7. Update AGENTS.md files if you discover reusable patterns
 8. If checks pass, set `passes: true` for the completed story in `prd.json`. Change nothing else
@@ -86,7 +87,7 @@ requirements that would help future work.
 
 ## Quality Requirements
 
-- Work on one story per iteration
+- Work on one story at a time and finish it
 - Keep changes focused and minimal
 - Follow existing code patterns
 - Before working on a Go backend, HTTP API, SQL, persistence, or migration story, invoke the
@@ -110,10 +111,11 @@ requirements that would help future work.
 
 If a correct implementation needs a decision the PRD does not settle, decide within the PRD's
 confirmed design decisions (確定した設計判断) and Non-Goals, record the decision and its basis
-under a `設計判断` heading in your progress.txt entry, and continue. Do not stop the iteration
-for a missing decision, and do not turn it into a fallback or compatibility policy. Leave
-`passes: false` only when checks fail or the story is unfinished; then write what remains so the
-next iteration can continue from your uncommitted work.
+under a `設計判断` heading in your progress.txt entry, and continue. Do not stop for a missing
+decision, and do not turn it into a fallback or compatibility policy. Do not end your turn with
+the story unfinished. Leave `passes: false` only when a check fails for a reason you cannot fix,
+or the remaining work needs something outside Authorized actions; then write exactly what remains
+and why.
 
 ## Authorized actions
 
@@ -131,10 +133,9 @@ are available, note that manual browser verification is still needed.
 
 ## Stop Condition
 
-End after one story. The outer runner validates the state transition, performs the independent
-policy review, commits approved work, and decides whether all stories are complete. If you could
-not finish, the next iteration continues from your uncommitted work; several consecutive
-iterations without a completed story stop the run.
+End when the selected story is complete. The outer runner validates the state transition,
+performs the independent policy review, commits approved work, and decides whether all stories
+are complete. Do not stop part-way to hand work to a later turn.
 EOF
   echo "created: $CLAUDE_FILE"
 else
