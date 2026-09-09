@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.1.0] - 2026-09-08
+
+### Fixed
+
+- Record the worker's uncommitted work in `scripts/ralph/logs/leftover.txt` when a `prd.json` validation fails (metadata or story-specification edits, wrong story), so the next run resumes instead of refusing to start; `prd.json` is still restored.
+- Tell workers, in the runner prompt and the generated instructions, to change only the completed story's `passes` and `notes` in `prd.json`; the `ralph` overlay keeps `description` free of progress state because any later edit to it is rejected.
+- Regression: a worker that edits `description` fails closed, leaves resumable work, and the following run completes.
+
 ## [0.4.0.0] - 2026-09-08
 
 ### Changed

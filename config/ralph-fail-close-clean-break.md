@@ -5,7 +5,10 @@ When converting a PRD, keep its `Failure Behavior`, `Compatibility and Removal`,
 `確定した設計判断` sections authoritative without copying them into every story.
 
 - Set `description` to name the PRD file as the source of truth (正本) and state that its
-  confirmed design decisions are not re-litigated during implementation.
+  confirmed design decisions are not re-litigated during implementation. Keep it free of progress
+  state such as which stories are done or what is uncommitted; progress lives only in each
+  story's `passes` and `notes` and in `progress.txt`, because the runner rejects any later edit
+  to `description`.
 - Write only story-specific acceptance criteria plus the standard check criteria (typecheck, lint,
   tests, and browser verification for UI stories). Reference PRD decisions by their IDs instead of
   pasting their text; a policy or requirement sentence that would appear in more than one story

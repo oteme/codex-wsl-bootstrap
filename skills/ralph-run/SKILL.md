@@ -97,8 +97,9 @@ do not infer completion or automatically restart. The run directory is the recov
 - Child agents implement one iteration directly. They must not invoke `ralph-run`, run the
   runner script, launch another `codex exec`, or start another autonomous loop.
 - Workers do not commit. The runner verifies that exactly one story changed from `passes: false`
-  to `passes: true`, rejects unauthorized PRD edits, and then asks a fresh Codex process to inspect
-  the diff. The reviewer performs static diff review in a disposable worktree and must not run
+  to `passes: true`, rejects any other `prd.json` edit (including the top-level `description`)
+  while restoring `prd.json` and recording the worker's uncommitted code for resume, and then asks
+  a fresh Codex process to inspect the diff. The reviewer performs static diff review in a disposable worktree and must not run
   builds, tests, linters, coverage, or package-manager commands. The runner removes that worktree
   after review and rejects the iteration if the main HEAD, staged tree, tracked files, or untracked
   files change during review.

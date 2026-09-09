@@ -46,7 +46,9 @@ You are an autonomous coding agent working on a software project.
 5. Implement that single user story
 6. Run quality checks (typecheck, lint, test, or whatever this project requires)
 7. Update AGENTS.md files if you discover reusable patterns
-8. If checks pass, update the PRD to set `passes: true` for the completed story
+8. If checks pass, set `passes: true` for the completed story in `prd.json`. Change nothing else
+   in `prd.json` except that story's `notes`; the outer runner rejects any other edit, including
+   the top-level `description`
 9. Append your progress to `progress.txt`
 10. Stop without committing. The outer runner performs an independent policy review and commits
     only after that review approves the diff.

@@ -258,7 +258,7 @@ Read the file $RALPH_DIR/CLAUDE.md in full and execute its instructions exactly 
 That file is your complete and authoritative task specification for this iteration. The prd.json and progress.txt it refers to live in the same directory:
 $RALPH_DIR
 
-Run one Ralph iteration only. Update prd.json and progress.txt according to the instructions. Do not commit and do not claim that the whole run is complete; the outer runner owns review, commit, and completion.
+Run one Ralph iteration only. Update prd.json and progress.txt according to the instructions. In prd.json change only the completed story's passes and notes fields; any other edit, including the top-level description, is rejected by the outer runner. Do not commit and do not claim that the whole run is complete; the outer runner owns review, commit, and completion.
 $resume_note
 EOF
 )
@@ -330,9 +330,12 @@ EOF
   fi
 
   if [[ "$transition_status" -ne 0 ]]; then
+    # prd.json is restored; the worker's code changes stay in the tree and are recorded so the
+    # next run can resume them after the cause has been inspected.
     cp "$before_prd" "$RALPH_DIR/prd.json"
+    record_leftover
     echo "error: worker did not produce one valid story transition in iteration $i" >&2
-    echo "Inspect: $PROGRESS_FILE" >&2
+    echo "prd.json was restored; uncommitted work stays in the working tree. Inspect: $PROGRESS_FILE" >&2
     exit 1
   fi
 
@@ -344,6 +347,7 @@ EOF
     cp "$before_prd" "$RALPH_DIR/prd.json"
     python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
       "Expected the worker to continue $retry_story_id, but it completed $STORY_ID instead."
+    record_leftover
     echo "error: the worker must stay on $retry_story_id until it is completed; it completed $STORY_ID instead" >&2
     exit 1
   fi

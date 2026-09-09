@@ -54,6 +54,7 @@ grep -Fq 'untrusted diagnostic data' "$ralph_dir/CLAUDE.md"
 grep -Fq '## Authorized actions' "$ralph_dir/CLAUDE.md"
 grep -Fq '設計判断' "$ralph_dir/CLAUDE.md"
 grep -Fq 'continue from your uncommitted work' "$ralph_dir/CLAUDE.md"
+grep -Fq 'Change nothing else' "$ralph_dir/CLAUDE.md"
 if grep -Fq 'BLOCKED' "$ralph_dir/CLAUDE.md"; then
   echo 'generated Ralph instructions must not tell the worker to stop as BLOCKED' >&2
   exit 1
