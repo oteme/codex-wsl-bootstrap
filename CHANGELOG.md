@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.2.0] - 2026-09-09
+
+### Changed
+
+- Workers are told to complete the selected story within their turn. The runner prompt and the generated Ralph instructions no longer present handing unfinished work to a later iteration as a normal path; the leftover record stays as a safety net for interrupted runs.
+- The no-progress breaker now counts iterations that leave the working tree unchanged outside `scripts/ralph` and `docs/`, not iterations without a completed story. A separate cap, `RALPH_MAX_CONSECUTIVE_INCOMPLETE` (default 10), bounds consecutive incomplete iterations on one story.
+
+### Added
+
+- Regression for a worker that keeps changing files without completing the story: it is not stopped by the no-progress breaker and is stopped by the incomplete cap.
+
 ## [0.4.1.0] - 2026-09-08
 
 ### Fixed

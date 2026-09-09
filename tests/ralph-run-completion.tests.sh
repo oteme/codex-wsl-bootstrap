@@ -113,6 +113,12 @@ codex() {
     return 0
   fi
 
+  if [[ "$MOCK_MODE" == "progressing" ]]; then
+    printf 'more work %s\n' "$(grep -c '^worker$' "$MOCK_CALLS_FILE")" >> "$codex_cwd/app.txt"
+    printf 'worker still working\n' > "$last_message"
+    return 0
+  fi
+
   if [[ "$MOCK_MODE" == "progress-later" ]] \
     && [[ "$(grep -c '^worker$' "$MOCK_CALLS_FILE")" -eq 1 ]]; then
     printf 'partial work\n' >> "$codex_cwd/app.txt"
@@ -288,7 +294,8 @@ export MOCK_PROMPTS_FILE="$TEST_ROOT/second-prompts.txt"
 second_output="$(cd "$second_root" && bash "$RUNNER" 3)"
 grep -Fq 'completed=1' <<< "$second_output"
 grep -Fq 'iterationsRun=2' <<< "$second_output"
-grep -Fq 'You are the implementation worker for exactly one Ralph iteration.' "$MOCK_PROMPTS_FILE"
+grep -Fq 'You are the implementation worker for one Ralph story.' "$MOCK_PROMPTS_FILE"
+grep -Fq 'Complete the selected story in this turn' "$MOCK_PROMPTS_FILE"
 grep -Fq 'independent fail-close and clean-break policy reviewer' "$MOCK_PROMPTS_FILE"
 grep -Fq 'This is a static policy diff review.' "$MOCK_PROMPTS_FILE"
 grep -Fq 'managers, or any command that creates or modifies files.' "$MOCK_PROMPTS_FILE"
@@ -459,7 +466,7 @@ blocked_status=$?
 set -e
 [[ "$blocked_status" -eq 1 ]]
 grep -Fq 'Iteration 1 completed no story' <<< "$blocked_output"
-grep -Fq 'no story was completed in 3 consecutive iterations on US-001' <<< "$blocked_output"
+grep -Fq 'no progress in 3 consecutive iterations on US-001' <<< "$blocked_output"
 grep -Fq 'blocked=1' <<< "$blocked_output"
 grep -Fq 'iterationsRun=3' <<< "$blocked_output"
 [[ "$(grep -c '^worker$' "$MOCK_CALLS_FILE")" -eq 3 ]]
@@ -522,6 +529,28 @@ metadata_resume_output="$(cd "$metadata_root" && bash "$RUNNER" 1)"
 grep -Fq 'resuming uncommitted work left by the previous run' <<< "$metadata_resume_output"
 grep -Fq 'completed=1' <<< "$metadata_resume_output"
 [[ ! -e "$metadata_root/scripts/ralph/logs/leftover.txt" ]]
+
+progressing_root="$TEST_ROOT/progressing"
+make_fixture "$progressing_root"
+export MOCK_MODE="progressing"
+export MOCK_CALLS_FILE="$TEST_ROOT/progressing-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/progressing-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+set +e
+progressing_output="$(cd "$progressing_root" && RALPH_MAX_CONSECUTIVE_INCOMPLETE=4 bash "$RUNNER" 2>&1)"
+progressing_status=$?
+set -e
+[[ "$progressing_status" -eq 1 ]]
+grep -Fq 'US-001 was not completed in 4 consecutive iterations' <<< "$progressing_output"
+grep -Fq 'blocked=1' <<< "$progressing_output"
+grep -Fq 'iterationsRun=4' <<< "$progressing_output"
+if grep -Fq 'no progress in' <<< "$progressing_output"; then
+  echo 'a worker that keeps changing files must not trip the no-progress breaker' >&2
+  exit 1
+fi
+[[ "$(grep -c '^worker$' "$MOCK_CALLS_FILE")" -eq 4 ]]
+grep -Fq 'app.txt' "$progressing_root/scripts/ralph/logs/leftover.txt"
 
 already_done_root="$TEST_ROOT/already-done"
 make_fixture "$already_done_root"

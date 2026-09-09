@@ -22,10 +22,12 @@ Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, o
   it. `0` also means run until complete.
 - Rejection circuit breaker: the same story may be rejected at most 3 consecutive times by default.
   Override only when explicitly needed with `RALPH_MAX_CONSECUTIVE_REJECTIONS`.
-- No-progress circuit breaker: an iteration that completes no story keeps its uncommitted work in
-  place and the next iteration continues from it. After 3 consecutive such iterations on the same
-  story the runner stops as blocked. Override only when explicitly needed with
-  `RALPH_MAX_CONSECUTIVE_NO_PROGRESS`.
+- Progress circuit breakers: an iteration that completes no story keeps its uncommitted work in
+  place and the next iteration continues from it. Three consecutive iterations that leave the work
+  outside `scripts/ralph` and `docs/` unchanged stop the run as blocked
+  (`RALPH_MAX_CONSECUTIVE_NO_PROGRESS`), and ten consecutive iterations on the same story without
+  completing it also stop it (`RALPH_MAX_CONSECUTIVE_INCOMPLETE`). Override only when explicitly
+  needed.
 - Ralph directory: `<project-root>/scripts/ralph` by default. Run from the project root,
   the same directory where `./scripts/ralph/ralph.sh` would be run.
 
@@ -89,12 +91,14 @@ do not infer completion or automatically restart. The run directory is the recov
   ordered updates to `prd.json` and `progress.txt`.
 - An omitted iteration limit is intentional. Do not invent a 10-iteration default and do not chain
   extra runner invocations after a guessed limit. A user-supplied numeric limit remains authoritative.
-- Three consecutive policy rejections, or three consecutive iterations that complete no story, on
-  the same story stop the runner as blocked instead of consuming unbounded retries. Nonzero child
-  exits and invalid state transitions still fail closed.
+- Three consecutive policy rejections, three consecutive iterations that change nothing outside
+  `scripts/ralph` and `docs/`, or ten consecutive incomplete iterations on the same story stop the
+  runner as blocked instead of consuming unbounded retries. Nonzero child exits and invalid state
+  transitions still fail closed.
 - Child agents are instructed to read `RALPH_DIR/CLAUDE.md` in full and follow it as the
   authoritative task specification for that iteration.
-- Child agents implement one iteration directly. They must not invoke `ralph-run`, run the
+- Child agents implement one story directly and are told to finish it within their turn rather
+  than hand unfinished work to a later iteration. They must not invoke `ralph-run`, run the
   runner script, launch another `codex exec`, or start another autonomous loop.
 - Workers do not commit. The runner verifies that exactly one story changed from `passes: false`
   to `passes: true`, rejects any other `prd.json` edit (including the top-level `description`)
