@@ -6,18 +6,12 @@ usage() {
 Usage: ralph-run-codex.sh [max-iterations] [ralph-dir]
 
 Defaults:
-  max-iterations: no global limit; run until complete or blocked
+  max-iterations: 0, which means twice the number of pending stories (at least 10)
   ralph-dir:      $PWD/scripts/ralph
 
-Environment:
-  RALPH_MAX_CONSECUTIVE_REJECTIONS: stop after this many policy rejections for
-                                    the same story (default: 3)
-  RALPH_MAX_CONSECUTIVE_NO_PROGRESS: stop after this many consecutive iterations
-                                     that leave the work outside scripts/ralph
-                                     and docs/ unchanged (default: 3)
-  RALPH_MAX_CONSECUTIVE_INCOMPLETE: stop after this many consecutive iterations
-                                    on the same story without completing it
-                                    (default: 10)
+The run ends when every story passes or the iteration budget is used up. An iteration that
+completes no story leaves its work in the working tree and the next iteration continues from it;
+an incomplete or rejected story never stops the run by itself.
 EOF
 }
 
@@ -33,30 +27,9 @@ fi
 
 MAX_ITER="${1:-0}"
 RALPH_DIR_INPUT="${2:-"$PWD/scripts/ralph"}"
-MAX_CONSECUTIVE_REJECTIONS="${RALPH_MAX_CONSECUTIVE_REJECTIONS:-3}"
-MAX_CONSECUTIVE_NO_PROGRESS="${RALPH_MAX_CONSECUTIVE_NO_PROGRESS:-3}"
-MAX_CONSECUTIVE_INCOMPLETE="${RALPH_MAX_CONSECUTIVE_INCOMPLETE:-10}"
 
 if ! [[ "$MAX_ITER" =~ ^[0-9]+$ ]]; then
-  echo "error: max-iterations must be a non-negative integer; omit it or use 0 to run until complete" >&2
-  exit 2
-fi
-
-if ! [[ "$MAX_CONSECUTIVE_REJECTIONS" =~ ^[0-9]+$ ]] \
-  || [[ "$MAX_CONSECUTIVE_REJECTIONS" -lt 1 ]]; then
-  echo "error: RALPH_MAX_CONSECUTIVE_REJECTIONS must be a positive integer" >&2
-  exit 2
-fi
-
-if ! [[ "$MAX_CONSECUTIVE_NO_PROGRESS" =~ ^[0-9]+$ ]] \
-  || [[ "$MAX_CONSECUTIVE_NO_PROGRESS" -lt 1 ]]; then
-  echo "error: RALPH_MAX_CONSECUTIVE_NO_PROGRESS must be a positive integer" >&2
-  exit 2
-fi
-
-if ! [[ "$MAX_CONSECUTIVE_INCOMPLETE" =~ ^[0-9]+$ ]] \
-  || [[ "$MAX_CONSECUTIVE_INCOMPLETE" -lt 1 ]]; then
-  echo "error: RALPH_MAX_CONSECUTIVE_INCOMPLETE must be a positive integer" >&2
+  echo "error: max-iterations must be a non-negative integer; omit it or use 0 for the default budget" >&2
   exit 2
 fi
 
@@ -177,8 +150,6 @@ if ! flock -n 9; then
   exit 1
 fi
 
-LEFTOVER_FILE="$LOG_DIR/leftover.txt"
-
 outside_changes_now() {
   git -C "$PROJECT_ROOT" status --porcelain=v1 --untracked-files=all | while IFS= read -r line; do
     path="${line:3}"
@@ -189,62 +160,27 @@ outside_changes_now() {
   done
 }
 
-# Record the uncommitted work a stopped run leaves behind so the next run can resume it, and
-# only it. A clean tree removes the record.
-record_leftover() {
-  local changes
-  changes="$(outside_changes_now)"
-  if [[ -n "$changes" ]]; then
-    printf '%s\n' "$changes" > "$LEFTOVER_FILE"
-  else
-    rm -f "$LEFTOVER_FILE"
-  fi
-}
-
-# Content hash of the worker's uncommitted work outside the Ralph directory and docs/. An
-# iteration whose hash does not change made no progress; one that changes it did, even when the
-# story is not complete yet.
-work_hash_now() {
-  {
-    git -C "$PROJECT_ROOT" diff HEAD -- . ":(exclude)$RALPH_REL" ":(exclude)docs"
-    git -C "$PROJECT_ROOT" ls-files --others --exclude-standard -z | while IFS= read -r -d '' path; do
-      case "$path" in
-        "$RALPH_REL"/*|docs/*) ;;
-        *) printf '%s\0' "$path"; cat -- "$PROJECT_ROOT/$path"; printf '\0' ;;
-      esac
-    done
-  } | sha256sum | awk '{print $1}'
-}
-
-# prd.json/progress.txt are commonly created immediately before the first run. Permit bootstrap
-# metadata there, but never absorb unrelated application changes into a Ralph story commit.
-# Work recorded by the previous runner exit is resumed only when it matches exactly.
+# Uncommitted work never blocks a run. It stays in the working tree, the worker is told about
+# it, and it enters the next approved story commit together with that story's changes.
 outside_changes="$(outside_changes_now)"
 if [[ -n "$outside_changes" ]]; then
-  if [[ -f "$LEFTOVER_FILE" && "$outside_changes" == "$(cat "$LEFTOVER_FILE")" ]]; then
-    echo "pre-run: resuming uncommitted work left by the previous run"
-  else
-    echo "error: refusing to start with pre-existing changes outside scripts/ralph" >&2
-    printf '%s\n' "$outside_changes" >&2
-    echo "Commit, stash, or move those changes before running Ralph." >&2
-    if [[ -f "$LEFTOVER_FILE" ]]; then
-      echo "They differ from the work recorded in $LEFTOVER_FILE." >&2
-    fi
-    exit 1
+  echo "pre-run: uncommitted changes present outside scripts/ralph; they stay in the working tree and enter the next approved commit"
+  sed 's/^/  /' <<< "$outside_changes"
+fi
+
+if [[ "$MAX_ITER" -eq 0 ]]; then
+  pending_count="$(python3 "$STATE_TOOL" pending-count "$RALPH_DIR/prd.json")"
+  MAX_ITER=$((pending_count * 2))
+  if [[ "$MAX_ITER" -lt 10 ]]; then
+    MAX_ITER=10
   fi
+  echo "Ralph iteration budget: $MAX_ITER (twice the $pending_count pending stories, at least 10)"
 fi
 
 completed=0
-blocked=0
 iterations_run=0
-retry_story_id=""
-rejection_story_id=""
-consecutive_rejections=0
-incomplete_story_id=""
-consecutive_no_progress=0
-consecutive_incomplete=0
 
-for ((i = 1; MAX_ITER == 0 || i <= MAX_ITER; i++)); do
+for ((i = 1; i <= MAX_ITER; i++)); do
   iterations_run="$i"
   log_file="$LOG_DIR/codex-iteration-$i.log"
   last_message="$LOG_DIR/codex-iteration-$i-last-message.txt"
@@ -254,11 +190,7 @@ for ((i = 1; MAX_ITER == 0 || i <= MAX_ITER; i++)); do
 
   cp "$RALPH_DIR/prd.json" "$before_prd"
 
-  if [[ "$MAX_ITER" -eq 0 ]]; then
-    echo "Ralph iteration $i (running until complete)"
-  else
-    echo "Ralph iteration $i of $MAX_ITER"
-  fi
+  echo "Ralph iteration $i of $MAX_ITER"
 
   expected_story_output="$(python3 "$STATE_TOOL" next-story "$RALPH_DIR/prd.json")"
   if [[ -z "$expected_story_output" ]]; then
@@ -272,9 +204,8 @@ for ((i = 1; MAX_ITER == 0 || i <= MAX_ITER; i++)); do
 
   resume_note=""
   if [[ -n "$(outside_changes_now)" ]]; then
-    resume_note="Uncommitted work for story $EXPECTED_STORY_ID from a previous turn is present in the working tree. Continue from it; do not discard or redo it."
+    resume_note="The working tree already contains uncommitted changes. Keep them; do not discard or revert them. If they belong to story $EXPECTED_STORY_ID, continue from them."
   fi
-  pre_work_hash="$(work_hash_now)"
 
   prompt=$(cat <<EOF
 You are the implementation worker for one Ralph story.
@@ -286,7 +217,7 @@ Read the file $RALPH_DIR/CLAUDE.md in full and execute its instructions exactly 
 That file is your complete and authoritative task specification. The prd.json and progress.txt it refers to live in the same directory:
 $RALPH_DIR
 
-Complete the selected story in this turn: keep working until its acceptance criteria and checks pass and you have set its passes to true. Do not stop part-way to hand work to a later turn. In prd.json change only the completed story's passes and notes fields; any other edit, including the top-level description, is rejected by the outer runner. Do not commit and do not claim that the whole run is complete; the outer runner owns review, commit, and completion.
+Complete the selected story in this turn: keep working until its acceptance criteria and checks pass and you have set its passes to true. Do not stop part-way to hand work to a later turn. In prd.json change only the completed story's passes and notes fields; the outer runner keeps only those changes and discards any other edit, including the top-level description. Do not commit and do not claim that the whole run is complete; the outer runner owns review, commit, and completion.
 $resume_note
 EOF
 )
@@ -305,7 +236,6 @@ EOF
 
   if [[ "$status" -ne 0 ]]; then
     cp "$before_prd" "$RALPH_DIR/prd.json"
-    record_leftover
     echo "error: codex exec failed in iteration $i with status $status" >&2
     echo "log: $log_file" >&2
     exit "$status"
@@ -313,7 +243,6 @@ EOF
 
   if [[ ! -s "$last_message" ]] || ! grep -q '[^[:space:]]' "$last_message"; then
     cp "$before_prd" "$RALPH_DIR/prd.json"
-    record_leftover
     echo "error: codex exec returned no final message in iteration $i" >&2
     echo "This can indicate an authentication or MCP startup failure." >&2
     echo "log: $log_file" >&2
@@ -330,69 +259,44 @@ EOF
     exit 1
   fi
 
+  # Keep only the story passes/notes changes from the worker's prd.json; every other edit is
+  # discarded with a warning, and the run continues either way.
   transition_output=""
   set +e
-  transition_output="$(python3 "$STATE_TOOL" validate-transition "$before_prd" "$RALPH_DIR/prd.json")"
+  transition_output="$(python3 "$STATE_TOOL" apply-transition "$before_prd" "$RALPH_DIR/prd.json")"
   transition_status=$?
   set -e
 
   if [[ "$transition_status" -eq 3 ]]; then
-    # The story is not complete. Keep the work in the tree for the next iteration instead of
-    # failing the run. Iterations that change nothing outside scripts/ralph and docs/ count as
-    # no progress; a separate cap bounds how long one story may stay incomplete.
-    record_leftover
-    post_work_hash="$(work_hash_now)"
-    if [[ "$incomplete_story_id" == "$EXPECTED_STORY_ID" ]]; then
-      consecutive_incomplete=$((consecutive_incomplete + 1))
-    else
-      incomplete_story_id="$EXPECTED_STORY_ID"
-      consecutive_incomplete=1
-      consecutive_no_progress=0
-    fi
-    if [[ "$post_work_hash" == "$pre_work_hash" ]]; then
-      consecutive_no_progress=$((consecutive_no_progress + 1))
-    else
-      consecutive_no_progress=0
-    fi
-    if [[ "$consecutive_no_progress" -ge "$MAX_CONSECUTIVE_NO_PROGRESS" ]]; then
-      blocked=1
-      echo "error: no progress in $consecutive_no_progress consecutive iterations on $EXPECTED_STORY_ID; stopping as blocked" >&2
-      echo "Inspect $PROGRESS_FILE and the uncommitted work recorded in $LEFTOVER_FILE." >&2
-      break
-    fi
-    if [[ "$consecutive_incomplete" -ge "$MAX_CONSECUTIVE_INCOMPLETE" ]]; then
-      blocked=1
-      echo "error: $EXPECTED_STORY_ID was not completed in $consecutive_incomplete consecutive iterations; stopping as blocked" >&2
-      echo "Inspect $PROGRESS_FILE and the uncommitted work recorded in $LEFTOVER_FILE." >&2
-      break
-    fi
-    retry_story_id="$EXPECTED_STORY_ID"
-    echo "Iteration $i completed no story; leaving the work for the next iteration (see $PROGRESS_FILE)."
+    echo "Iteration $i completed no story; its work stays in the working tree for the next iteration (see $PROGRESS_FILE)."
     continue
   fi
 
   if [[ "$transition_status" -ne 0 ]]; then
-    # prd.json is restored; the worker's code changes stay in the tree and are recorded so the
-    # next run can resume them after the cause has been inspected.
     cp "$before_prd" "$RALPH_DIR/prd.json"
-    record_leftover
-    echo "error: worker did not produce one valid story transition in iteration $i" >&2
+    echo "error: could not apply the worker's prd.json changes in iteration $i" >&2
     echo "prd.json was restored; uncommitted work stays in the working tree. Inspect: $PROGRESS_FILE" >&2
     exit 1
   fi
 
-  mapfile -t story_fields <<< "$transition_output"
-  STORY_ID="${story_fields[0]:-}"
-  STORY_TITLE="${story_fields[1]:-}"
-
-  if [[ -n "$retry_story_id" && "$STORY_ID" != "$retry_story_id" ]]; then
-    cp "$before_prd" "$RALPH_DIR/prd.json"
-    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
-      "Expected the worker to continue $retry_story_id, but it completed $STORY_ID instead."
-    record_leftover
-    echo "error: the worker must stay on $retry_story_id until it is completed; it completed $STORY_ID instead" >&2
-    exit 1
-  fi
+  STORY_IDS=()
+  STORY_TITLES=()
+  while IFS=$'\t' read -r story_id story_title; do
+    [[ -n "$story_id" ]] || continue
+    STORY_IDS+=("$story_id")
+    STORY_TITLES+=("$story_title")
+  done <<< "$transition_output"
+  STORY_ID_LIST=""
+  STORY_TITLE_LIST=""
+  STORY_REVIEW_LIST=""
+  for index in "${!STORY_IDS[@]}"; do
+    [[ -z "$STORY_ID_LIST" ]] || STORY_ID_LIST+=", "
+    STORY_ID_LIST+="${STORY_IDS[$index]}"
+    [[ -z "$STORY_TITLE_LIST" ]] || STORY_TITLE_LIST+="; "
+    STORY_TITLE_LIST+="${STORY_TITLES[$index]}"
+    [[ -z "$STORY_REVIEW_LIST" ]] || STORY_REVIEW_LIST+="; "
+    STORY_REVIEW_LIST+="${STORY_IDS[$index]}: ${STORY_TITLES[$index]}"
+  done
 
   git -C "$PROJECT_ROOT" add -A
   git -C "$PROJECT_ROOT" reset --quiet -- "$RALPH_REL/logs"
@@ -405,11 +309,11 @@ EOF
     set -e
     if [[ "$hook_status" -ne 0 ]]; then
       git -C "$PROJECT_ROOT" reset --quiet
-      cp "$before_prd" "$RALPH_DIR/prd.json"
-      python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
-        "Pre-commit hook exited with status $hook_status before policy review."
-      echo "error: pre-commit hook failed in iteration $i with status $hook_status" >&2
-      exit "$hook_status"
+      python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+        "Pre-commit hook exited with status $hook_status; the story stays incomplete and its work stays in the working tree." \
+        "${STORY_IDS[@]}"
+      echo "pre-commit hook failed in iteration $i with status $hook_status; $STORY_ID_LIST stays incomplete and the work stays in the working tree for the next iteration."
+      continue
     fi
     git -C "$PROJECT_ROOT" add -A
     git -C "$PROJECT_ROOT" reset --quiet -- "$RALPH_REL/logs"
@@ -426,8 +330,8 @@ EOF
   if ! git -C "$PROJECT_ROOT" diff --quiet || [[ -n "$unexpected_untracked" ]]; then
     git -C "$PROJECT_ROOT" reset --quiet
     cp "$before_prd" "$RALPH_DIR/prd.json"
-    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
-      "Could not create a complete staged snapshot for policy review."
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Could not create a complete staged snapshot for policy review." "${STORY_IDS[@]}"
     echo "error: unstaged or untracked changes remain outside Ralph logs" >&2
     [[ -n "$unexpected_untracked" ]] && printf '%s\n' "$unexpected_untracked" >&2
     exit 1
@@ -438,8 +342,8 @@ EOF
   if ! review_temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/ralph-review-XXXXXX")"; then
     git -C "$PROJECT_ROOT" reset --quiet
     cp "$before_prd" "$RALPH_DIR/prd.json"
-    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
-      "Could not allocate an isolated policy review directory; story was not approved."
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Could not allocate an isolated policy review directory; story was not approved." "${STORY_IDS[@]}"
     echo "error: could not allocate isolated policy review directory in iteration $i" >&2
     exit 1
   fi
@@ -452,8 +356,8 @@ EOF
     fi
     git -C "$PROJECT_ROOT" reset --quiet
     cp "$before_prd" "$RALPH_DIR/prd.json"
-    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
-      "Could not create an isolated policy review worktree; story was not approved."
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Could not create an isolated policy review worktree; story was not approved." "${STORY_IDS[@]}"
     echo "error: could not create isolated policy review worktree in iteration $i" >&2
     if [[ "$review_cleanup_failed" -eq 1 ]]; then
       echo "error: temporary policy review path also could not be cleaned: $review_worktree" >&2
@@ -474,7 +378,7 @@ $review_worktree
 The runner already verified that the staged snapshot is complete. Do not use the main worktree or
 plain "git diff HEAD"; every newly created file must be reviewed from the cached diff.
 
-The story under review is $STORY_ID: $STORY_TITLE. Read its acceptance criteria only to determine
+The stories under review are: $STORY_REVIEW_LIST. Read their acceptance criteria only to determine
 whether fallback, compatibility, removal, or test behavior is explicitly required or allowed:
 $review_worktree/$RALPH_REL/prd.json
 
@@ -512,8 +416,8 @@ EOF
   if ! cleanup_review_worktree; then
     git -C "$PROJECT_ROOT" reset --quiet
     cp "$before_prd" "$RALPH_DIR/prd.json"
-    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
-      "Temporary policy review worktree cleanup failed; story was not approved."
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Temporary policy review worktree cleanup failed; story was not approved." "${STORY_IDS[@]}"
     echo "error: could not remove temporary policy review worktree in iteration $i" >&2
     exit 1
   fi
@@ -557,16 +461,16 @@ EOF
     fi
     git -C "$PROJECT_ROOT" reset --quiet
     cp "$before_prd" "$RALPH_DIR/prd.json"
-    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
-      "Repository changed after the staged policy snapshot was created."
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Repository changed after the staged policy snapshot was created." "${STORY_IDS[@]}"
     exit 1
   fi
 
   if [[ "$review_status" -ne 0 ]]; then
     git -C "$PROJECT_ROOT" reset --quiet
     cp "$before_prd" "$RALPH_DIR/prd.json"
-    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
-      "Policy reviewer exited with status $review_status; story was not approved."
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Policy reviewer exited with status $review_status; story was not approved." "${STORY_IDS[@]}"
     echo "error: policy review failed in iteration $i with status $review_status" >&2
     echo "log: $log_file" >&2
     exit "$review_status"
@@ -576,8 +480,8 @@ EOF
   if ! review_result="$(python3 "$STATE_TOOL" review-result "$review_file")"; then
     git -C "$PROJECT_ROOT" reset --quiet
     cp "$before_prd" "$RALPH_DIR/prd.json"
-    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
-      "Policy reviewer returned invalid structured output; story was not approved."
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Policy reviewer returned invalid structured output; story was not approved." "${STORY_IDS[@]}"
     echo "error: invalid policy review output in iteration $i" >&2
     echo "review: $review_file" >&2
     exit 1
@@ -585,28 +489,13 @@ EOF
 
   if [[ "$review_result" == "rejected" ]]; then
     git -C "$PROJECT_ROOT" reset --quiet
-    cp "$before_prd" "$RALPH_DIR/prd.json"
     python3 "$STATE_TOOL" reject \
-      "$RALPH_DIR/prd.json" "$review_file" "$PROGRESS_FILE" "$STORY_ID"
-    record_leftover
-    if [[ "$rejection_story_id" == "$STORY_ID" ]]; then
-      consecutive_rejections=$((consecutive_rejections + 1))
-    else
-      rejection_story_id="$STORY_ID"
-      consecutive_rejections=1
-    fi
-    if [[ "$consecutive_rejections" -ge "$MAX_CONSECUTIVE_REJECTIONS" ]]; then
-      blocked=1
-      echo "error: policy review rejected $STORY_ID $consecutive_rejections consecutive times; stopping as blocked" >&2
-      echo "Inspect the latest findings in $PROGRESS_FILE and $review_file." >&2
-      break
-    fi
-    retry_story_id="$STORY_ID"
-    echo "Policy review rejected $STORY_ID; leaving changes uncommitted for the next repair iteration."
+      "$RALPH_DIR/prd.json" "$review_file" "$PROGRESS_FILE" "${STORY_IDS[@]}"
+    echo "Policy review rejected $STORY_ID_LIST; the changes stay uncommitted for repair in the next iteration."
     continue
   fi
 
-  commit_message="feat: $STORY_ID - $STORY_TITLE"
+  commit_message="feat: $STORY_ID_LIST - $STORY_TITLE_LIST"
   branch_ref="$(git -C "$PROJECT_ROOT" symbolic-ref -q HEAD || true)"
   commit_oid=""
   if [[ -n "$branch_ref" ]]; then
@@ -620,18 +509,11 @@ EOF
       -m "commit: $commit_message" "$branch_ref" "$commit_oid" "$iteration_head"; then
     git -C "$PROJECT_ROOT" reset --quiet
     cp "$before_prd" "$RALPH_DIR/prd.json"
-    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" "$STORY_ID" \
-      "Exact-tree commit gate failed; story was not committed."
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Exact-tree commit gate failed; story was not committed." "${STORY_IDS[@]}"
     echo "error: exact-tree commit gate failed in iteration $i" >&2
     exit 1
   fi
-  retry_story_id=""
-  rejection_story_id=""
-  consecutive_rejections=0
-  incomplete_story_id=""
-  consecutive_no_progress=0
-  consecutive_incomplete=0
-  rm -f "$LEFTOVER_FILE"
 
   if [[ "$(python3 "$STATE_TOOL" all-passed "$RALPH_DIR/prd.json")" == "true" ]]; then
     completed=1
@@ -642,22 +524,12 @@ EOF
   echo "Iteration $i approved and committed. Continuing..."
 done
 
-if [[ "$blocked" -eq 1 ]]; then
-  echo "Ralph stopped as blocked: the current story was rejected repeatedly, made no progress, or stayed incomplete too long."
-elif [[ "$completed" -eq 0 && "$MAX_ITER" -gt 0 ]]; then
-  echo "Ralph reached max iterations ($MAX_ITER) without completing all tasks."
-fi
-if [[ -f "$LEFTOVER_FILE" ]]; then
-  echo "Uncommitted work is recorded in $LEFTOVER_FILE; the next run resumes from it."
+if [[ "$completed" -eq 0 ]]; then
+  echo "Ralph used its iteration budget ($MAX_ITER) without completing all stories; uncommitted work stays in the working tree. Run it again to continue."
 fi
 
 echo "completed=$completed"
 echo "iterationsRun=$iterations_run"
 echo "maxIterations=$MAX_ITER"
-echo "blocked=$blocked"
 echo "progress=$PROGRESS_FILE"
 echo "logs=$LOG_DIR"
-
-if [[ "$blocked" -eq 1 ]]; then
-  exit 1
-fi
