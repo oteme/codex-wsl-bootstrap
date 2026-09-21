@@ -46,14 +46,12 @@ def outcome(log, code):
         stream.seek(max(0, stream.tell() - 16384))
         tail = stream.read().decode('utf-8', errors='replace')
     match = re.search(r'\ncompleted=([01])\niterationsRun=(\d+)\nmaxIterations=(\d+)'
-                      r'\nblocked=([01])\nprogress=[^\n]+\nlogs=[^\n]+\n\Z', '\n' + tail)
+                      r'\nprogress=[^\n]+\nlogs=[^\n]+\n\Z', '\n' + tail)
     if match:
-        complete, iterations, limit, blocked = map(int, match.groups())
-        if code == 0 and complete == 1 and blocked == 0:
+        complete, iterations, limit = map(int, match.groups())
+        if code == 0 and complete == 1:
             return 'completed', iterations
-        if code != 0 and complete == 0 and blocked == 1:
-            return 'blocked', iterations
-        if code == 0 and complete == 0 and blocked == 0 and limit > 0 and iterations == limit:
+        if code == 0 and complete == 0 and limit > 0 and iterations == limit:
             return 'limit_reached', iterations
     return 'failed', None
 

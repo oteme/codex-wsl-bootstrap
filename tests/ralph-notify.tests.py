@@ -58,13 +58,12 @@ sys.exit(int(os.environ.get('QUEUE_FAIL', '0')))
 
     def worker(self, mode, delay=0):
         footer = {
-            'completed': 'completed=1\niterationsRun=1\nmaxIterations=0\nblocked=0',
-            'blocked': 'completed=0\niterationsRun=3\nmaxIterations=0\nblocked=1',
-            'limit': 'completed=0\niterationsRun=2\nmaxIterations=2\nblocked=0',
+            'completed': 'completed=1\niterationsRun=1\nmaxIterations=10',
+            'limit': 'completed=0\niterationsRun=2\nmaxIterations=2',
             'invalid': 'completed=1',
             'failure': '',
         }[mode]
-        code = 7 if mode == 'failure' else 1 if mode == 'blocked' else 0
+        code = 7 if mode == 'failure' else 0
         (self.bin / 'ralph-run-codex.sh').write_text(
             f"#!/bin/bash\nsleep {delay}\nprintf 'PRIVATE_WORKER_LOG\\n'\n"
             + "cat <<'EOF'\n" + footer + '\nprogress=/fixture/progress.txt\nlogs=/fixture/logs\nEOF\n'
@@ -120,7 +119,7 @@ sys.exit(int(os.environ.get('QUEUE_FAIL', '0')))
                 self.assertFalse((self.root / 'queue.jsonl').exists())
 
     def test_terminal_states(self):
-        for mode, expected in [('blocked', 'blocked'), ('limit', 'limit_reached'),
+        for mode, expected in [('limit', 'limit_reached'),
                                ('failure', 'failed'), ('invalid', 'failed')]:
             with self.subTest(mode=mode):
                 self.worker(mode)

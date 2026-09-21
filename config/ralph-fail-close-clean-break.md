@@ -13,7 +13,7 @@ behave. Carry them into acceptance criteria only where a story implements them.
 
 - Set `description` to name the PRD file as the source of truth (正本). Keep it free of progress
   state such as which stories are done or what is uncommitted; progress lives only in each
-  story's `passes` and `notes` and in `progress.txt`, because the runner rejects any later edit
+  story's `passes` and `notes` and in `progress.txt`, because the runner discards any later edit
   to `description`.
 - Leave out work that only a person can do (their accounts, devices, one-time external setup,
   manual approvals, live verification on real services); it belongs in the PRD's pre-run

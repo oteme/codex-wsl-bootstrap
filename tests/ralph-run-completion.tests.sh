@@ -152,6 +152,21 @@ with open(path, "w", encoding="utf-8") as handle:
     handle.write("\n")
 PY
     printf 'implementation attempt\n' >> "$codex_cwd/app.txt"
+    if [[ "$MOCK_MODE" == "two-stories" ]]; then
+      python3 - "$codex_cwd/scripts/ralph/prd.json" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    document = json.load(handle)
+for story in document["userStories"]:
+    story["passes"] = True
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(document, handle, indent=2)
+    handle.write("\n")
+PY
+    fi
     if [[ "$MOCK_MODE" == "metadata" ]]; then
       python3 - "$codex_cwd/scripts/ralph/prd.json" <<'PY'
 import json
@@ -300,7 +315,7 @@ grep -Fq 'independent fail-close and clean-break policy reviewer' "$MOCK_PROMPTS
 grep -Fq 'This is a static policy diff review.' "$MOCK_PROMPTS_FILE"
 grep -Fq 'managers, or any command that creates or modifies files.' "$MOCK_PROMPTS_FILE"
 grep -Fq 'Judge only the policy violations listed' "$MOCK_PROMPTS_FILE"
-grep -Fq 'Read its acceptance criteria only to determine' "$MOCK_PROMPTS_FILE"
+grep -Fq 'Read their acceptance criteria only to determine' "$MOCK_PROMPTS_FILE"
 grep -Fq 'Do not review general correctness or completeness.' "$MOCK_PROMPTS_FILE"
 if grep -Fq 'An unmet or contradicted acceptance criterion.' "$MOCK_PROMPTS_FILE"; then
   echo 'policy reviewer prompt must not grade general acceptance criteria' >&2
@@ -460,19 +475,21 @@ export MOCK_CALLS_FILE="$TEST_ROOT/blocked-calls.txt"
 export MOCK_PROMPTS_FILE="$TEST_ROOT/blocked-prompts.txt"
 : > "$MOCK_CALLS_FILE"
 : > "$MOCK_PROMPTS_FILE"
-set +e
+# A worker that never completes the story does not stop the run; the budget does.
 blocked_output="$(cd "$blocked_root" && bash "$RUNNER" 3 2>&1)"
-blocked_status=$?
-set -e
-[[ "$blocked_status" -eq 1 ]]
 grep -Fq 'Iteration 1 completed no story' <<< "$blocked_output"
-grep -Fq 'no progress in 3 consecutive iterations on US-001' <<< "$blocked_output"
-grep -Fq 'blocked=1' <<< "$blocked_output"
+grep -Fq 'Iteration 3 completed no story' <<< "$blocked_output"
+grep -Fq 'used its iteration budget (3)' <<< "$blocked_output"
+grep -Fq 'completed=0' <<< "$blocked_output"
 grep -Fq 'iterationsRun=3' <<< "$blocked_output"
+grep -Fq 'maxIterations=3' <<< "$blocked_output"
+if grep -Fq 'blocked=' <<< "$blocked_output"; then
+  echo 'the runner must not report a blocked status' >&2
+  exit 1
+fi
 [[ "$(grep -c '^worker$' "$MOCK_CALLS_FILE")" -eq 3 ]]
 [[ "$(grep -c '^review$' "$MOCK_CALLS_FILE" || true)" -eq 0 ]]
 grep -Fq '"passes": false' "$blocked_root/scripts/ralph/prd.json"
-[[ ! -e "$blocked_root/scripts/ralph/logs/leftover.txt" ]]
 
 no_progress_limit_root="$TEST_ROOT/no-progress-limit"
 make_fixture "$no_progress_limit_root"
@@ -484,7 +501,7 @@ export MOCK_PROMPTS_FILE="$TEST_ROOT/no-progress-limit-prompts.txt"
 no_progress_limit_output="$(cd "$no_progress_limit_root" && bash "$RUNNER" 2)"
 grep -Fq 'completed=0' <<< "$no_progress_limit_output"
 grep -Fq 'iterationsRun=2' <<< "$no_progress_limit_output"
-grep -Fq 'blocked=0' <<< "$no_progress_limit_output"
+grep -Fq 'used its iteration budget (2)' <<< "$no_progress_limit_output"
 
 progress_later_root="$TEST_ROOT/progress-later"
 make_fixture "$progress_later_root"
@@ -497,12 +514,12 @@ progress_later_output="$(cd "$progress_later_root" && bash "$RUNNER" 3)"
 grep -Fq 'Iteration 1 completed no story' <<< "$progress_later_output"
 grep -Fq 'completed=1' <<< "$progress_later_output"
 grep -Fq 'iterationsRun=2' <<< "$progress_later_output"
-[[ "$(grep -c 'Uncommitted work for story US-001' "$MOCK_PROMPTS_FILE")" -eq 1 ]]
+[[ "$(grep -c 'already contains uncommitted changes' "$MOCK_PROMPTS_FILE")" -eq 1 ]]
+grep -Fq 'If they belong to story US-001, continue from them' "$MOCK_PROMPTS_FILE"
 [[ "$(grep -c '^worker$' "$MOCK_CALLS_FILE")" -eq 2 ]]
 [[ "$(grep -c '^review$' "$MOCK_CALLS_FILE")" -eq 1 ]]
 git -C "$progress_later_root" show HEAD:app.txt | grep -Fq 'partial work'
 git -C "$progress_later_root" show HEAD:app.txt | grep -Fq 'implementation attempt'
-[[ ! -e "$progress_later_root/scripts/ralph/logs/leftover.txt" ]]
 [[ -z "$(git -C "$progress_later_root" status --porcelain)" ]]
 
 metadata_root="$TEST_ROOT/metadata"
@@ -513,22 +530,16 @@ export MOCK_CALLS_FILE="$TEST_ROOT/metadata-calls.txt"
 export MOCK_PROMPTS_FILE="$TEST_ROOT/metadata-prompts.txt"
 : > "$MOCK_CALLS_FILE"
 : > "$MOCK_PROMPTS_FILE"
-set +e
+# A worker that also edits prd.json metadata: the edit is discarded, the story still lands.
 metadata_output="$(cd "$metadata_root" && bash "$RUNNER" 2 2>&1)"
-metadata_status=$?
-set -e
-[[ "$metadata_status" -eq 1 ]]
-grep -Fq 'worker changed PRD metadata' <<< "$metadata_output"
-grep -Fq 'did not produce one valid story transition' <<< "$metadata_output"
+grep -Fq 'ignored edits to prd.json metadata' <<< "$metadata_output"
+grep -Fq 'completed=1' <<< "$metadata_output"
+grep -Fq 'iterationsRun=1' <<< "$metadata_output"
 grep -Fq 'change only the completed story'"'"'s passes and notes' "$MOCK_PROMPTS_FILE"
-cmp "$TEST_ROOT/metadata-before.json" "$metadata_root/scripts/ralph/prd.json"
-grep -Fq 'app.txt' "$metadata_root/scripts/ralph/logs/leftover.txt"
-[[ "$(grep -c '^review$' "$MOCK_CALLS_FILE" || true)" -eq 0 ]]
-export MOCK_MODE="approve"
-metadata_resume_output="$(cd "$metadata_root" && bash "$RUNNER" 1)"
-grep -Fq 'resuming uncommitted work left by the previous run' <<< "$metadata_resume_output"
-grep -Fq 'completed=1' <<< "$metadata_resume_output"
-[[ ! -e "$metadata_root/scripts/ralph/logs/leftover.txt" ]]
+[[ "$(grep -c '^review$' "$MOCK_CALLS_FILE")" -eq 1 ]]
+git -C "$metadata_root" show HEAD:scripts/ralph/prd.json | grep -Fq '"description": "Test story"'
+git -C "$metadata_root" show HEAD:scripts/ralph/prd.json | grep -Fq '"passes": true'
+[[ -z "$(git -C "$metadata_root" status --porcelain)" ]]
 
 progressing_root="$TEST_ROOT/progressing"
 make_fixture "$progressing_root"
@@ -537,20 +548,14 @@ export MOCK_CALLS_FILE="$TEST_ROOT/progressing-calls.txt"
 export MOCK_PROMPTS_FILE="$TEST_ROOT/progressing-prompts.txt"
 : > "$MOCK_CALLS_FILE"
 : > "$MOCK_PROMPTS_FILE"
-set +e
-progressing_output="$(cd "$progressing_root" && RALPH_MAX_CONSECUTIVE_INCOMPLETE=4 bash "$RUNNER" 2>&1)"
-progressing_status=$?
-set -e
-[[ "$progressing_status" -eq 1 ]]
-grep -Fq 'US-001 was not completed in 4 consecutive iterations' <<< "$progressing_output"
-grep -Fq 'blocked=1' <<< "$progressing_output"
+# A worker that keeps changing files without completing the story runs to the budget.
+progressing_output="$(cd "$progressing_root" && bash "$RUNNER" 4 2>&1)"
+grep -Fq 'completed=0' <<< "$progressing_output"
 grep -Fq 'iterationsRun=4' <<< "$progressing_output"
-if grep -Fq 'no progress in' <<< "$progressing_output"; then
-  echo 'a worker that keeps changing files must not trip the no-progress breaker' >&2
-  exit 1
-fi
+grep -Fq 'used its iteration budget (4)' <<< "$progressing_output"
 [[ "$(grep -c '^worker$' "$MOCK_CALLS_FILE")" -eq 4 ]]
-grep -Fq 'app.txt' "$progressing_root/scripts/ralph/logs/leftover.txt"
+[[ "$(grep -c 'more work' "$progressing_root/app.txt")" -eq 4 ]]
+git -C "$progressing_root" status --porcelain | grep -Fq 'app.txt'
 
 already_done_root="$TEST_ROOT/already-done"
 make_fixture "$already_done_root"
@@ -581,48 +586,15 @@ export MOCK_CALLS_FILE="$TEST_ROOT/dirty-calls.txt"
 export MOCK_PROMPTS_FILE="$TEST_ROOT/dirty-prompts.txt"
 : > "$MOCK_CALLS_FILE"
 : > "$MOCK_PROMPTS_FILE"
-set +e
+# Uncommitted changes present before the run are kept, announced to the worker, and enter the
+# next approved commit instead of refusing the run.
 dirty_output="$(cd "$dirty_root" && bash "$RUNNER" 1 2>&1)"
-dirty_status=$?
-set -e
-[[ "$dirty_status" -eq 1 ]]
-grep -Fq 'pre-existing changes outside scripts/ralph' <<< "$dirty_output"
-
-resume_root="$TEST_ROOT/resume"
-make_fixture "$resume_root"
-printf 'partial work\n' > "$resume_root/app.txt"
-git -C "$resume_root" status --porcelain=v1 --untracked-files=all \
-  > "$resume_root/scripts/ralph/logs/leftover.txt"
-export MOCK_MODE="approve"
-export MOCK_CALLS_FILE="$TEST_ROOT/resume-calls.txt"
-export MOCK_PROMPTS_FILE="$TEST_ROOT/resume-prompts.txt"
-: > "$MOCK_CALLS_FILE"
-: > "$MOCK_PROMPTS_FILE"
-resume_output="$(cd "$resume_root" && bash "$RUNNER" 1)"
-grep -Fq 'resuming uncommitted work left by the previous run' <<< "$resume_output"
-grep -Fq 'completed=1' <<< "$resume_output"
-grep -Fq 'Uncommitted work for story US-001' "$MOCK_PROMPTS_FILE"
-git -C "$resume_root" show HEAD:app.txt | grep -Fq 'partial work'
-[[ ! -e "$resume_root/scripts/ralph/logs/leftover.txt" ]]
-
-resume_mismatch_root="$TEST_ROOT/resume-mismatch"
-make_fixture "$resume_mismatch_root"
-printf 'partial work\n' > "$resume_mismatch_root/app.txt"
-git -C "$resume_mismatch_root" status --porcelain=v1 --untracked-files=all \
-  > "$resume_mismatch_root/scripts/ralph/logs/leftover.txt"
-printf 'unrelated\n' > "$resume_mismatch_root/unrelated.txt"
-export MOCK_CALLS_FILE="$TEST_ROOT/resume-mismatch-calls.txt"
-export MOCK_PROMPTS_FILE="$TEST_ROOT/resume-mismatch-prompts.txt"
-: > "$MOCK_CALLS_FILE"
-: > "$MOCK_PROMPTS_FILE"
-set +e
-resume_mismatch_output="$(cd "$resume_mismatch_root" && bash "$RUNNER" 1 2>&1)"
-resume_mismatch_status=$?
-set -e
-[[ "$resume_mismatch_status" -eq 1 ]]
-grep -Fq 'pre-existing changes outside scripts/ralph' <<< "$resume_mismatch_output"
-grep -Fq 'differ from the work recorded' <<< "$resume_mismatch_output"
-[[ "$(grep -c '^worker$' "$MOCK_CALLS_FILE" || true)" -eq 0 ]]
+grep -Fq 'uncommitted changes present outside scripts/ralph' <<< "$dirty_output"
+grep -Fq 'unrelated.txt' <<< "$dirty_output"
+grep -Fq 'completed=1' <<< "$dirty_output"
+grep -Fq 'already contains uncommitted changes' "$MOCK_PROMPTS_FILE"
+git -C "$dirty_root" show --format= --name-only HEAD | grep -Fxq 'unrelated.txt'
+[[ -z "$(git -C "$dirty_root" status --porcelain)" ]]
 
 worker_error_root="$TEST_ROOT/worker-error"
 make_fixture "$worker_error_root"
@@ -664,14 +636,14 @@ export MOCK_CALLS_FILE="$TEST_ROOT/wrong-retry-calls.txt"
 export MOCK_PROMPTS_FILE="$TEST_ROOT/wrong-retry-prompts.txt"
 : > "$MOCK_CALLS_FILE"
 : > "$MOCK_PROMPTS_FILE"
-set +e
+# After a rejection, a worker that completes a different story is not stopped either.
 wrong_retry_output="$(cd "$wrong_retry_root" && bash "$RUNNER" 2 2>&1)"
-wrong_retry_status=$?
-set -e
-[[ "$wrong_retry_status" -eq 1 ]]
-grep -Fq 'must stay on US-001' <<< "$wrong_retry_output"
-[[ "$(grep -c '"passes": false' "$wrong_retry_root/scripts/ralph/prd.json")" -eq 2 ]]
-[[ "$(grep -c '^review$' "$MOCK_CALLS_FILE")" -eq 1 ]]
+grep -Fq 'Policy review rejected US-001' <<< "$wrong_retry_output"
+grep -Fq 'completed=0' <<< "$wrong_retry_output"
+grep -Fq 'iterationsRun=2' <<< "$wrong_retry_output"
+[[ "$(grep -c '^review$' "$MOCK_CALLS_FILE")" -eq 2 ]]
+git -C "$wrong_retry_root" log -1 --format=%s | grep -Fq 'feat: US-002 - Second story'
+[[ "$(grep -c '"passes": false' "$wrong_retry_root/scripts/ralph/prd.json")" -eq 1 ]]
 
 worker_commit_root="$TEST_ROOT/worker-commit"
 make_fixture "$worker_commit_root"
@@ -718,14 +690,16 @@ export MOCK_CALLS_FILE="$TEST_ROOT/commit-error-calls.txt"
 export MOCK_PROMPTS_FILE="$TEST_ROOT/commit-error-prompts.txt"
 : > "$MOCK_CALLS_FILE"
 : > "$MOCK_PROMPTS_FILE"
-set +e
+# A failing pre-commit hook resets the story and continues; the work stays in the tree.
 commit_error_output="$(cd "$commit_error_root" && bash "$RUNNER" 1 2>&1)"
-commit_error_status=$?
-set -e
-[[ "$commit_error_status" -eq 9 ]]
-grep -Fq 'pre-commit hook failed' <<< "$commit_error_output"
+grep -Fq 'pre-commit hook failed in iteration 1 with status 9' <<< "$commit_error_output"
+grep -Fq 'completed=0' <<< "$commit_error_output"
+grep -Fq 'iterationsRun=1' <<< "$commit_error_output"
 grep -Fq 'POLICY GATE FAILED' "$commit_error_root/scripts/ralph/progress.txt"
 grep -Fq '"passes": false' "$commit_error_root/scripts/ralph/prd.json"
+git -C "$commit_error_root" status --porcelain | grep -Fq 'app.txt'
+[[ "$(git -C "$commit_error_root" rev-list --count HEAD)" -eq 1 ]]
+[[ "$(grep -c '^review$' "$MOCK_CALLS_FILE" || true)" -eq 0 ]]
 
 hook_mutates_root="$TEST_ROOT/hook-mutates"
 make_fixture "$hook_mutates_root"
@@ -754,10 +728,26 @@ export MOCK_PROMPTS_FILE="$TEST_ROOT/until-complete-prompts.txt"
 : > "$MOCK_CALLS_FILE"
 : > "$MOCK_PROMPTS_FILE"
 until_complete_output="$(cd "$until_complete_root" && bash "$RUNNER")"
+grep -Fq 'Ralph iteration budget: 22 (twice the 11 pending stories, at least 10)' <<< "$until_complete_output"
 grep -Fq 'completed=1' <<< "$until_complete_output"
 grep -Fq 'iterationsRun=11' <<< "$until_complete_output"
-grep -Fq 'maxIterations=0' <<< "$until_complete_output"
+grep -Fq 'maxIterations=22' <<< "$until_complete_output"
 [[ "$(grep -c '^worker$' "$MOCK_CALLS_FILE")" -eq 11 ]]
+
+two_stories_root="$TEST_ROOT/two-stories"
+make_fixture "$two_stories_root"
+add_second_story "$two_stories_root"
+export MOCK_MODE="two-stories"
+export MOCK_CALLS_FILE="$TEST_ROOT/two-stories-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/two-stories-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+two_stories_output="$(cd "$two_stories_root" && bash "$RUNNER" 3)"
+grep -Fq 'completed=1' <<< "$two_stories_output"
+grep -Fq 'iterationsRun=1' <<< "$two_stories_output"
+[[ "$(grep -c '^review$' "$MOCK_CALLS_FILE")" -eq 1 ]]
+grep -Fq 'The stories under review are: US-001: Test gate; US-002: Second story.' "$MOCK_PROMPTS_FILE"
+git -C "$two_stories_root" log -1 --format=%s | grep -Fq 'feat: US-001, US-002 - Test gate; Second story'
 
 circuit_breaker_root="$TEST_ROOT/circuit-breaker"
 make_fixture "$circuit_breaker_root"
@@ -766,14 +756,14 @@ export MOCK_CALLS_FILE="$TEST_ROOT/circuit-breaker-calls.txt"
 export MOCK_PROMPTS_FILE="$TEST_ROOT/circuit-breaker-prompts.txt"
 : > "$MOCK_CALLS_FILE"
 : > "$MOCK_PROMPTS_FILE"
-set +e
+# Repeated rejections never stop the run; the default budget (at least 10) does.
 circuit_breaker_output="$(cd "$circuit_breaker_root" && bash "$RUNNER" 2>&1)"
-circuit_breaker_status=$?
-set -e
-[[ "$circuit_breaker_status" -eq 1 ]]
-grep -Fq 'rejected US-001 3 consecutive times' <<< "$circuit_breaker_output"
-grep -Fq 'blocked=1' <<< "$circuit_breaker_output"
-[[ "$(grep -c '^review$' "$MOCK_CALLS_FILE")" -eq 3 ]]
+grep -Fq 'Ralph iteration budget: 10 (twice the 1 pending stories, at least 10)' <<< "$circuit_breaker_output"
+grep -Fq 'used its iteration budget (10)' <<< "$circuit_breaker_output"
+grep -Fq 'completed=0' <<< "$circuit_breaker_output"
+grep -Fq 'iterationsRun=10' <<< "$circuit_breaker_output"
+[[ "$(grep -c '^review$' "$MOCK_CALLS_FILE")" -eq 10 ]]
+[[ "$(grep -c 'POLICY REVIEW REJECTED' "$circuit_breaker_root/scripts/ralph/progress.txt")" -eq 10 ]]
 
 set +e
 nested_output="$(cd "$reject_root" && RALPH_RUN_ACTIVE=1 bash "$RUNNER" 3 2>&1)"
@@ -796,4 +786,4 @@ assert result.returncode != 0
 assert 'another Ralph runner is already active' in result.stderr
 PY
 
-printf 'PASS: policy rejection/repair, no-progress continuation, leftover resume, failure rollback, commit gate, dirty tree, and recursion guard.\n'
+printf 'PASS: policy rejection/repair, budget-bounded continuation, sanitized prd.json, dirty tree absorption, failure rollback, commit gate, and recursion guard.\n'

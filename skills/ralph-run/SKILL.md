@@ -9,25 +9,21 @@ Run Ralph's serial implementation loop using fresh `codex exec` processes instea
 Claude Workflow subagents. This is the Codex equivalent of the local Claude
 `ralph-run` skill: each iteration starts with a clean agent context, reads the project's
 Ralph instructions and updates `prd.json` and `progress.txt`. The runner independently reviews each
-diff for fail-close/clean-break violations, commits only approved work, and runs under a detached supervisor until every story is approved or the runner reaches a
-concrete blocked condition. The supervisor queues one result to the initiating Codex thread.
+diff for fail-close/clean-break violations, commits only approved work, and runs under a detached
+supervisor until every story is approved or the iteration budget is used up. The supervisor queues
+one result to the initiating Codex thread.
 
 Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, or the
 `prd`/`ralph` skills just to run the loop. The runner reads them as-is.
 
 ## Inputs
 
-- Max iterations: optional positive integer from the invocation, such as `/ralph-run 30`. With no
-  number, the runner continues until all stories pass or a concrete failure/blocked condition stops
-  it. `0` also means run until complete.
-- Rejection circuit breaker: the same story may be rejected at most 3 consecutive times by default.
-  Override only when explicitly needed with `RALPH_MAX_CONSECUTIVE_REJECTIONS`.
-- Progress circuit breakers: an iteration that completes no story keeps its uncommitted work in
-  place and the next iteration continues from it. Three consecutive iterations that leave the work
-  outside `scripts/ralph` and `docs/` unchanged stop the run as blocked
-  (`RALPH_MAX_CONSECUTIVE_NO_PROGRESS`), and ten consecutive iterations on the same story without
-  completing it also stop it (`RALPH_MAX_CONSECUTIVE_INCOMPLETE`). Override only when explicitly
-  needed.
+- Iteration budget: optional positive integer from the invocation, such as `/ralph-run 30`. With
+  no number (or `0`), the runner sets the budget to twice the number of pending stories, at least
+  10, and prints it. The run ends when every story passes or the budget is used up; nothing else
+  ends it except a hard error (a failed `codex exec`, an empty worker reply, a worker commit, a
+  reviewer that cannot run). An iteration that completes no story, or whose story the reviewer
+  rejects, leaves its work in the working tree and the next iteration continues from it.
 - Ralph directory: `<project-root>/scripts/ralph` by default. Run from the project root,
   the same directory where `./scripts/ralph/ralph.sh` would be run.
 
@@ -64,11 +60,12 @@ Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, o
    log-tail polling, goals, or another monitoring agent. The program waits for Ralph and uses
    `codex queue` once when it finishes. Detailed worker/reviewer output remains in files.
 6. On receipt of `[Ralph result]`, read that run's `result.json` and report its terminal status,
-   iterations, exit code and progress path. `limit_reached` is incomplete; `blocked`, `failed`
-   and `interrupted` are not success. A `blocked` result means the same story was rejected or
-   completed nothing repeatedly; read its latest `progress.txt` entry and `logs/leftover.txt`
-   before deciding what to change. Do not launch another run automatically. On failure, read
-   only the relevant log excerpt needed to explain it, not the entire execution history.
+   iterations, exit code and progress path. `limit_reached` means the budget ran out with
+   stories still pending; the uncommitted work of the current story stays in the working tree and
+   `git status` shows it. Read the latest `progress.txt` entry before deciding whether to run
+   again or change the story. `failed` and `interrupted` are not success. Do not launch another
+   run automatically. On failure, read only the relevant log excerpt needed to explain it, not the
+   entire execution history.
 
 The durable result separates work status from notification status. `notification=queued` means
 Codex accepted the message, not that the user read it. If queuing fails or times out, the supervisor
@@ -89,21 +86,21 @@ do not infer completion or automatically restart. The run directory is the recov
   is intentionally equivalent to the unattended Ralph loop. Only run it in a trusted repository.
 - Iterations are serial by design. Do not parallelize them; Ralph stories depend on
   ordered updates to `prd.json` and `progress.txt`.
-- An omitted iteration limit is intentional. Do not invent a 10-iteration default and do not chain
-  extra runner invocations after a guessed limit. A user-supplied numeric limit remains authoritative.
-- Three consecutive policy rejections, three consecutive iterations that change nothing outside
-  `scripts/ralph` and `docs/`, or ten consecutive incomplete iterations on the same story stop the
-  runner as blocked instead of consuming unbounded retries. Nonzero child exits and invalid state
-  transitions still fail closed.
+- An omitted budget means the runner's own default (twice the pending stories, at least 10). Do
+  not chain extra runner invocations after it; a user-supplied number remains authoritative.
+- There are no per-story stops. Incomplete iterations, rejected stories, and a failing pre-commit
+  hook all leave the work in the working tree and continue with the next iteration. Only hard
+  errors (nonzero child exit, empty worker reply, a worker commit, a reviewer that cannot run or
+  returns invalid output, a repository changed during review) end the run early.
 - Child agents are instructed to read `RALPH_DIR/CLAUDE.md` in full and follow it as the
   authoritative task specification for that iteration.
 - Child agents implement one story directly and are told to finish it within their turn rather
   than hand unfinished work to a later iteration. They must not invoke `ralph-run`, run the
   runner script, launch another `codex exec`, or start another autonomous loop.
-- Workers do not commit. The runner verifies that exactly one story changed from `passes: false`
-  to `passes: true`, rejects any other `prd.json` edit (including the top-level `description`)
-  while restoring `prd.json` and recording the worker's uncommitted code for resume, and then asks
-  a fresh Codex process to inspect the diff. The reviewer performs static diff review in a disposable worktree and must not run
+- Workers do not commit. The runner keeps only the story `passes` and `notes` changes from the
+  worker's `prd.json` (every other edit, including the top-level `description`, is discarded with
+  a warning), accepts one or more stories that changed from `passes: false` to `passes: true`, and
+  then asks a fresh Codex process to inspect the diff. The reviewer performs static diff review in a disposable worktree and must not run
   builds, tests, linters, coverage, or package-manager commands. The runner removes that worktree
   after review and rejects the iteration if the main HEAD, staged tree, tracked files, or untracked
   files change during review.
@@ -116,10 +113,9 @@ do not infer completion or automatically restart. The run directory is the recov
   criteria only to determine whether those policy-sensitive behaviors are explicitly required or
   allowed; it does not grade general story correctness or completeness. Rejected work remains
   uncommitted and the story returns to `passes: false` for repair in the next iteration.
-- The runner refuses to start when files outside `scripts/ralph` are already modified or untracked,
-  unless they exactly match the uncommitted work recorded in `scripts/ralph/logs/leftover.txt` by
-  the previous run, in which case the run resumes from it. This prevents a story commit from
-  absorbing unrelated work.
+- Uncommitted changes outside `scripts/ralph` do not block a run. The runner lists them, tells the
+  worker to keep them, and they enter the next approved story commit together with that story's
+  changes, as in the Claude loop.
 - A zero child exit with an empty final message is an error, not an incomplete iteration.
   Report the iteration log because authentication or MCP startup may have failed.
 - Completion is derived from validated `prd.json` state after the approved commit. It is not trusted
