@@ -55,6 +55,11 @@ grep -Fq '## Authorized actions' "$ralph_dir/CLAUDE.md"
 grep -Fq '## Fail-close and Clean-break Requirements' "$ralph_dir/CLAUDE.md"
 grep -Fq 'They do not decide when you stop' "$ralph_dir/CLAUDE.md"
 grep -Fq 'Do not end your turn with' "$ralph_dir/CLAUDE.md"
+grep -Fq 'record exactly what remains in progress.txt instead of leaving' "$ralph_dir/CLAUDE.md"
+if grep -Fq 'Leave `passes: false` only when' "$ralph_dir/CLAUDE.md"; then
+  echo 'generated Ralph instructions must not offer a reason to withhold passes' >&2
+  exit 1
+fi
 grep -Fq 'Do not stop part-way' "$ralph_dir/CLAUDE.md"
 grep -Fq 'Change nothing else' "$ralph_dir/CLAUDE.md"
 if grep -Fq 'BLOCKED' "$ralph_dir/CLAUDE.md"; then
