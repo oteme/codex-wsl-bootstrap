@@ -112,9 +112,10 @@ story passes.
 - Existing required fallback or compatibility behavior may be preserved. New behavior of that kind
   must be traceable to an acceptance criterion.
 
-Do not end your turn with the story unfinished. Leave `passes: false` only when a check fails for
-a reason you cannot fix, or the remaining work needs something outside Authorized actions; then
-write exactly what remains and why.
+Do not end your turn with the story unfinished. When the project's checks pass, set `passes: true`
+even if something could not be verified or done in this turn (a live service, a device, an
+account, an approval): record exactly what remains in progress.txt instead of leaving
+`passes: false`. A failing check is fixed in this turn, not handed to a later one.
 
 ## Authorized actions
 

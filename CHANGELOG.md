@@ -11,6 +11,7 @@ All notable changes to this project are documented in this file.
 - `prd.json` edits are sanitized instead of rejected: `ralph-state.py apply-transition` keeps only story `passes` and `notes` changes from the worker's file, discards metadata, specification, and added/removed-story edits with a warning, and accepts one or more stories completed in one iteration (`validate-transition` is replaced).
 - Uncommitted changes outside `scripts/ralph` no longer block a run. They are listed, the worker is told to keep them, and they enter the next approved story commit; `scripts/ralph/logs/leftover.txt` and the resume matching are removed.
 - The supervisor no longer reports a `blocked` status.
+- The generated Ralph instructions tell the worker to set `passes: true` when the project's checks pass and to record anything it could not verify or do (a live service, a device, an account, an approval) in `progress.txt`, instead of leaving `passes: false`; one story is one iteration, as in the Claude loop.
 
 ### Unchanged
 
