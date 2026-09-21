@@ -6,9 +6,9 @@ description: Apply the repository's Go backend conventions when planning, implem
 # Go Backend Rules
 
 Use these rules together with the target repository's instructions. Explicit product requirements
-and narrower repository rules remain authoritative. If they conflict in a way that changes
-correctness, compatibility, or failure behavior, stop and surface the decision instead of inventing
-a fallback.
+and narrower repository rules remain authoritative. Where they conflict on correctness,
+compatibility, or failure behavior, the product requirement or repository rule wins; record the
+conflict where the work is tracked, and do not resolve it by adding a fallback.
 
 ## Read the relevant rules first
 

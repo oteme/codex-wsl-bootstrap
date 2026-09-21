@@ -1,8 +1,8 @@
 
 ## Fail-close and clean-break requirements
 
-Every PRD must make error and compatibility behavior explicit. During clarification, ask only
-when the answer cannot be established from the user's request or repository evidence.
+These sections describe how the product must behave. They are not rules about when work stops
+or whether a story is complete.
 
 Add these sections to the PRD:
 
@@ -20,13 +20,7 @@ Add these sections to the PRD:
 - For required compatibility, name the supported old behavior, its consumers, and its removal
   condition. Do not add speculative compatibility for unreleased behavior.
 
-### 確定した設計判断
-
-- A table with an ID, the decision, and its reason for every decision settled during review or
-  clarification, including the failure and compatibility choices above.
-- Implementation follows this table without re-litigating it. When an implementer needs a
-  decision the table does not cover, they decide within it and Non-Goals and record the decision;
-  they do not stop.
+## Work only a person can do
 
 ### Pre-run checklist
 
@@ -35,7 +29,3 @@ Add these sections to the PRD:
   autonomous loop starts.
 - It must not appear as user stories or acceptance criteria. Every user story must be completable
   by an unattended worker with repository changes, local builds, and local tests.
-
-Keep user stories free of repeated policy text. A story references these sections by ID
-(for example `D3`, `FR-5`) instead of restating them; a sentence that would appear in more than
-one story belongs in the PRD sections above.

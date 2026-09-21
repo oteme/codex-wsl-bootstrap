@@ -99,6 +99,9 @@ requirements that would help future work.
 
 ## Fail-close and Clean-break Requirements
 
+These describe how the code you write must behave. They do not decide when you stop or whether a
+story passes.
+
 - Fix the root cause required by the story. Do not turn an error into apparent success with a
   fallback, guessed default, broad retry, swallowed exception, or no-op.
 - Do not add a compatibility shim, legacy branch, dual implementation, migration path, or feature
@@ -109,13 +112,9 @@ requirements that would help future work.
 - Existing required fallback or compatibility behavior may be preserved. New behavior of that kind
   must be traceable to an acceptance criterion.
 
-If a correct implementation needs a decision the PRD does not settle, decide within the PRD's
-confirmed design decisions (確定した設計判断) and Non-Goals, record the decision and its basis
-under a `設計判断` heading in your progress.txt entry, and continue. Do not stop for a missing
-decision, and do not turn it into a fallback or compatibility policy. Do not end your turn with
-the story unfinished. Leave `passes: false` only when a check fails for a reason you cannot fix,
-or the remaining work needs something outside Authorized actions; then write exactly what remains
-and why.
+Do not end your turn with the story unfinished. Leave `passes: false` only when a check fails for
+a reason you cannot fix, or the remaining work needs something outside Authorized actions; then
+write exactly what remains and why.
 
 ## Authorized actions
 

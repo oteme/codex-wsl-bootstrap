@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.3.0] - 2026-09-22
+
+### Changed
+
+- Fail-close and clean-break are stated as properties of the code being built, not of the work process. The shared AGENTS guidance, the `prd` and `ralph` overlays, and the generated Ralph instructions keep only the code rules (no silent fallback, no compatibility path the story does not require, obsolete paths removed, no weakened tests) and say so explicitly.
+- Removed the rules that only existed to counter the earlier stop rules: decide-within-confirmed-decisions-and-continue, the confirmed-decisions table, the ID-reference rule for acceptance criteria, the "do not add gating criteria" rule, and the "still create `prd.json`" rule. The `prd` overlay no longer restricts clarifying questions.
+- The `go-backend` skill no longer tells the agent to stop or surface a decision when rules conflict or a contract condition is missing; the conflict or gap is recorded and not filled with a fallback.
+- The pre-run checklist for work only a person can do stays, under its own heading in the `prd` overlay, and the `ralph` overlay keeps the `description` and human-only-work constraints under a `Runner constraints` heading. The runner itself (review, single-story validation, breakers, dirty-tree check) is unchanged.
+
+### Added
+
+- Regression: the shared policy texts, the generated Ralph instructions, and the `go-backend` skill contain no stop, surface, or refuse-to-convert rule.
+
 ## [0.4.2.0] - 2026-09-09
 
 ### Changed

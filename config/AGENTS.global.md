@@ -53,7 +53,10 @@ Always, even before the skill is loaded:
 
 ## Fail-close and clean-break
 
-For plans, specs, PRDs, implementations, and reviews:
+These describe how the code being built must behave. They are not rules about when the agent
+stops, asks, refuses a step, or marks work complete.
+
+In plans, specs, PRDs, implementations, and reviews:
 
 - State which invalid inputs or states must fail, and do not silently substitute defaults,
   swallow errors, or add fallback/retry behavior unless the requirements explicitly call for it.
@@ -62,11 +65,6 @@ For plans, specs, PRDs, implementations, and reviews:
 - Name the code, flags, shims, migrations, tests, and documentation that must be deleted.
 - Treat new fallback paths, compatibility shims, retained legacy branches, swallowed exceptions,
   and weakened/skipped tests as specification changes that require explicit acceptance criteria.
-- If a decision is needed that the requirements do not settle, decide within the PRD's
-  confirmed design decisions (確定した設計判断) and Non-Goals, record the decision and its
-  basis where the work is tracked (`progress.txt` for Ralph, the plan or PRD otherwise), and
-  continue. Do not stop for a missing decision, and do not turn it into a fallback or
-  compatibility policy.
 
 For detailed explanations outside of a Decision Brief / AskUserQuestion, use an HTML artifact.
 
