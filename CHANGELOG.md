@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.5.0.0] - 2026-09-22
+
+### Changed
+
+- The Ralph runner no longer stops for an incomplete or rejected story. The rejection, no-progress, and incomplete circuit breakers and their `RALPH_MAX_CONSECUTIVE_*` settings are removed; an iteration that completes no story, a rejected story, and a failing pre-commit hook all leave the work in the working tree and the next iteration continues from it.
+- The run ends when every story passes or the iteration budget is used up. An omitted or zero budget now means twice the number of pending stories, at least 10, and the runner prints it; the result is `limit_reached` when the budget runs out.
+- `prd.json` edits are sanitized instead of rejected: `ralph-state.py apply-transition` keeps only story `passes` and `notes` changes from the worker's file, discards metadata, specification, and added/removed-story edits with a warning, and accepts one or more stories completed in one iteration (`validate-transition` is replaced).
+- Uncommitted changes outside `scripts/ralph` no longer block a run. They are listed, the worker is told to keep them, and they enter the next approved story commit; `scripts/ralph/logs/leftover.txt` and the resume matching are removed.
+- The supervisor no longer reports a `blocked` status.
+- The generated Ralph instructions tell the worker to set `passes: true` when the project's checks pass and to record anything it could not verify or do (a live service, a device, an account, an approval) in `progress.txt`, instead of leaving `passes: false`; one story is one iteration, as in the Claude loop.
+
+### Unchanged
+
+- The independent policy review, the exact-tree commit, the worker-commit and review-integrity checks, and the hard errors for a failed or silent `codex exec`.
+
 ## [0.4.3.0] - 2026-09-22
 
 ### Changed

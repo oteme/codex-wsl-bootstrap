@@ -141,12 +141,12 @@ fallback/legacy paths, and weakened tests. Acceptance criteria are consulted onl
 policy exceptions; the reviewer does not grade general story correctness or completeness.
 Reviewer-created files are discarded with that worktree. Only an approved diff is committed and
 allowed to count as passing. A rejected story returns to `passes: false` and is repaired in the
-next iteration. Workers are told to finish the selected story within their turn. An iteration that
-still completes no story keeps its uncommitted work in place for the next iteration; three
-consecutive iterations that change nothing outside `scripts/ralph` and `docs/`, or ten consecutive
-incomplete iterations on one story, stop the run as blocked. The
-runner refuses to start if unrelated files outside `scripts/ralph` are already dirty, unless they
-exactly match the work recorded by the previous run in `scripts/ralph/logs/leftover.txt`.
+next iteration. Workers are told to finish the selected story within their turn. Nothing stops the
+run because a story is incomplete or rejected: the work stays in the working tree and the next
+iteration continues from it, until every story passes or the iteration budget (the given number,
+or twice the pending stories, at least 10) is used up. The runner keeps only story `passes` and
+`notes` changes from the worker's `prd.json` and discards other edits with a warning. Uncommitted
+changes present before a run are kept and enter the next approved story commit.
 
 ## Ralph completion notifications
 

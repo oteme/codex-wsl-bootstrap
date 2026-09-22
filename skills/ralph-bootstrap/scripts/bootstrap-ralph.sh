@@ -48,8 +48,8 @@ You are an autonomous coding agent working on a software project.
 6. Run quality checks (typecheck, lint, test, or whatever this project requires)
 7. Update AGENTS.md files if you discover reusable patterns
 8. If checks pass, set `passes: true` for the completed story in `prd.json`. Change nothing else
-   in `prd.json` except that story's `notes`; the outer runner rejects any other edit, including
-   the top-level `description`
+   in `prd.json` except that story's `notes`; the outer runner keeps only those changes and
+   discards any other edit, including the top-level `description`
 9. Append your progress to `progress.txt`
 10. Stop without committing. The outer runner performs an independent policy review and commits
     only after that review approves the diff.
@@ -112,9 +112,10 @@ story passes.
 - Existing required fallback or compatibility behavior may be preserved. New behavior of that kind
   must be traceable to an acceptance criterion.
 
-Do not end your turn with the story unfinished. Leave `passes: false` only when a check fails for
-a reason you cannot fix, or the remaining work needs something outside Authorized actions; then
-write exactly what remains and why.
+Do not end your turn with the story unfinished. When the project's checks pass, set `passes: true`
+even if something could not be verified or done in this turn (a live service, a device, an
+account, an approval): record exactly what remains in progress.txt instead of leaving
+`passes: false`. A failing check is fixed in this turn, not handed to a later one.
 
 ## Authorized actions
 
