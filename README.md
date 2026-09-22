@@ -13,7 +13,8 @@ Recreates this Codex CLI environment on another Ubuntu/WSL2 device:
 - A lazily loaded `go-backend` skill for Clean Architecture, HTTP API, SQL, and migration rules
 - Shared Japanese/gstack/Ralph instructions in `~/.codex/AGENTS.md`
 - The same instructions and skills in the Windows Codex App when it is installed
-- Fail-close/clean-break requirements in plans and PRDs, plus an independent Ralph diff gate
+- Fail-close/clean-break rules for the code being built, stated in plans and PRDs and checked by an
+  independent Ralph diff review
 
 ## RTK Safe Hook
 
@@ -126,13 +127,13 @@ References: [Codex MCP](https://developers.openai.com/codex/mcp),
 
 ## Ralph policy gate
 
-`ralph-bootstrap` generates project instructions that forbid speculative fallbacks and
-compatibility paths. A decision the PRD does not settle is made within its confirmed design
-decisions and recorded in `progress.txt`, not escalated as a stop, and the instructions carry an
-`Authorized actions` list for external resources. The installed `prd` skill requires explicit
-failure behavior, compatibility decisions, a confirmed-decisions table, and a pre-run checklist
-for work only a person can do; the `ralph` skill references those decisions by ID instead of
-copying policy text or serial gates into every story.
+`ralph-bootstrap` generates project instructions whose fail-close and clean-break rules describe
+the code the worker writes: no speculative fallback, no compatibility path the story does not
+require, obsolete paths removed, no weakened tests. They do not tell the worker when to stop or
+whether a story passes. The instructions carry an `Authorized actions` list for external
+resources. The installed `prd` skill requires explicit failure behavior and compatibility
+decisions, plus a pre-run checklist for work only a person can do; the `ralph` skill carries those
+decisions into acceptance criteria only where a story implements them.
 
 During `ralph-run`, workers leave each story uncommitted. A fresh Codex process statically reviews
 the exact staged diff in a disposable detached Git worktree for swallowed failures, unrequested

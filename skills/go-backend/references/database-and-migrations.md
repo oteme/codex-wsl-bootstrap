@@ -23,8 +23,8 @@ expand schema -> deploy code transition -> contract obsolete schema and code
 
 Every expand story must have a paired contract story. Name every temporary dual write,
 compatibility read, retained column, converter, feature flag, migration, test, and document that the
-contract removes. Define the safe contract condition. If that decision is absent, stop as blocked;
-do not invent a compatibility policy.
+contract removes. Define the safe contract condition. If the requirements do not define it, record
+the gap where the work is tracked and do not fill it with a compatibility policy.
 
 This section is not precedent for retaining ordinary code paths.
 

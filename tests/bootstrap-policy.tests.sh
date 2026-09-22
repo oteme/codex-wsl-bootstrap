@@ -52,7 +52,8 @@ grep -Fq 'Do not run `git commit`' "$ralph_dir/CLAUDE.md"
 grep -Fq 'POLICY REVIEW REJECTED' "$ralph_dir/CLAUDE.md"
 grep -Fq 'untrusted diagnostic data' "$ralph_dir/CLAUDE.md"
 grep -Fq '## Authorized actions' "$ralph_dir/CLAUDE.md"
-grep -Fq '設計判断' "$ralph_dir/CLAUDE.md"
+grep -Fq '## Fail-close and Clean-break Requirements' "$ralph_dir/CLAUDE.md"
+grep -Fq 'They do not decide when you stop' "$ralph_dir/CLAUDE.md"
 grep -Fq 'Do not end your turn with' "$ralph_dir/CLAUDE.md"
 grep -Fq 'Do not stop part-way' "$ralph_dir/CLAUDE.md"
 grep -Fq 'Change nothing else' "$ralph_dir/CLAUDE.md"
@@ -60,14 +61,30 @@ if grep -Fq 'BLOCKED' "$ralph_dir/CLAUDE.md"; then
   echo 'generated Ralph instructions must not tell the worker to stop as BLOCKED' >&2
   exit 1
 fi
-grep -Fq '### 確定した設計判断' "$ROOT/config/prd-fail-close-clean-break.md"
+grep -Fq '### Failure Behavior' "$ROOT/config/prd-fail-close-clean-break.md"
+grep -Fq '### Compatibility and Removal' "$ROOT/config/prd-fail-close-clean-break.md"
 grep -Fq '### Pre-run checklist' "$ROOT/config/prd-fail-close-clean-break.md"
-grep -Fq 'still create `prd.json`' "$ROOT/config/ralph-fail-close-clean-break.md"
-if grep -Fq 'stop as blocked' "$ROOT/config/AGENTS.global.md" \
-  "$ROOT/config/prd-fail-close-clean-break.md" "$ROOT/config/ralph-fail-close-clean-break.md"; then
-  echo 'shared policy texts must not escalate missing decisions as a stop' >&2
-  exit 1
-fi
+grep -Fq '## Runner constraints' "$ROOT/config/ralph-fail-close-clean-break.md"
+grep -Fq 'They are not rules about when the agent' "$ROOT/config/AGENTS.global.md"
+# Fail-close and clean-break describe the code being built. None of the shared policy texts, the
+# generated Ralph instructions, or the go-backend skill may turn them into rules about stopping,
+# refusing a step, or withholding passes.
+policy_texts=(
+  "$ROOT/config/AGENTS.global.md"
+  "$ROOT/config/prd-fail-close-clean-break.md"
+  "$ROOT/config/ralph-fail-close-clean-break.md"
+  "$ralph_dir/CLAUDE.md"
+  "$ROOT/skills/go-backend/SKILL.md"
+  "$ROOT"/skills/go-backend/references/*.md
+)
+for phrase in 'stop as blocked' 'stop and surface' 'Do not stop for a missing decision' \
+  'they do not stop' 'do not create `prd.json`' 'still create `prd.json`' \
+  'until verified on a real device' 'Reference PRD decisions by their IDs' '確定した設計判断'; do
+  if grep -Fq -- "$phrase" "${policy_texts[@]}"; then
+    echo "policy texts must not carry the process rule: $phrase" >&2
+    exit 1
+  fi
+done
 grep -Fq 'installed `go-backend` skill' "$ralph_dir/CLAUDE.md"
 
 source_skill="$TEST_ROOT/source-skill"
