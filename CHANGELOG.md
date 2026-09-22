@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.6.0.0] - 2026-09-23
+
+### Added
+
+- Add Orca's `orca-cli` and `computer-use` discovery skills to the bootstrap-managed Codex CLI
+  and Windows Codex App homes. Each stub loads the version-matched guide from the selected Orca
+  executable at use time.
+- Verify both Orca skills in Doctor and cover their installation and unmanaged App collision
+  behavior in regression tests.
+
+### Unchanged
+
+- The bootstrap does not install Orca itself and does not modify the shared `~/.agents/skills`
+  source or Claude symlinks. Missing or incompatible Orca executables fail explicitly without a
+  fallback runtime.
+
 ## [0.5.0.0] - 2026-09-22
 
 ### Changed

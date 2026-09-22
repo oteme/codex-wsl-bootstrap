@@ -11,6 +11,8 @@ Recreates this Codex CLI environment on another Ubuntu/WSL2 device:
 - Ralph `prd` and `ralph` skills
 - Codex-native `ralph-bootstrap` and `ralph-run` skills
 - A lazily loaded `go-backend` skill for Clean Architecture, HTTP API, SQL, and migration rules
+- Orca's version-matched `orca-cli` and `computer-use` discovery skills for embedded browser,
+  worktree, terminal, and visible GUI control
 - Shared Japanese/gstack/Ralph instructions in `~/.codex/AGENTS.md`
 - The same instructions and skills in the Windows Codex App when it is installed
 - Fail-close/clean-break rules for the code being built, stated in plans and PRDs and checked by an
@@ -61,6 +63,12 @@ Apply repository changes only after creating and merging a PR, then rerun the Wi
 The installer is safe to rerun. It preserves unrelated content in
 `~/.codex/AGENTS.md` and refuses to overwrite unmanaged skill folders or modified source
 checkouts.
+
+The Orca skills are discovery stubs, not a bundled Orca runtime. They select the session's
+`orca`, `orca-ide`, or `orca-dev` executable and load its matching guide at use time. If that
+executable is missing or incompatible, the skill reports the exact error instead of trying a
+different runtime. Existing shared `~/.agents/skills` and Claude symlinks are left untouched;
+the bootstrap manages only its Codex CLI and Codex App copies.
 
 ## Chrome DevTools MCP (WSL CLI and App)
 

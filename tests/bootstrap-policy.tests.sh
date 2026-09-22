@@ -28,6 +28,10 @@ grep -Fq "$legacy_home/.local/share/codex-workstation-bootstrap/gstack" \
   <<< "$gstack_dry_run_output"
 grep -Fq "$legacy_home/.local/share/codex-workstation-bootstrap/ralph" \
   <<< "$gstack_dry_run_output"
+grep -Fq "install skill orca-cli -> $legacy_home/.codex/skills/orca-cli" \
+  <<< "$gstack_dry_run_output"
+grep -Fq "install skill computer-use -> $legacy_home/.codex/skills/computer-use" \
+  <<< "$gstack_dry_run_output"
 [[ "$(git -C "$legacy_home/gstack" status --short)" == ' M SKILL.md' ]]
 
 custom_state="$TEST_ROOT/custom-state"
@@ -132,6 +136,10 @@ for skill in gstack-plan-eng-review gstack-review prd ralph ralph-bootstrap ralp
 done
 bash "$ROOT/scripts/install-skill.sh" \
   "$ROOT/skills/go-backend" "$doctor_home/skills/go-backend" .managed
+bash "$ROOT/scripts/install-skill.sh" \
+  "$ROOT/skills/orca-cli" "$doctor_home/skills/orca-cli" .managed
+bash "$ROOT/scripts/install-skill.sh" \
+  "$ROOT/skills/computer-use" "$doctor_home/skills/computer-use" .managed
 printf '\n## Fail-close and clean-break requirements\n' >> "$doctor_home/skills/prd/SKILL.md"
 printf '\n## Preserve failure and removal semantics\n' >> "$doctor_home/skills/ralph/SKILL.md"
 mkdir -p "$doctor_home/skills/ralph-run/scripts" "$doctor_home/skills/ralph-run/assets"
@@ -203,6 +211,18 @@ grep -Fq 'App go-backend API rules missing' <<< "$doctor_app_output"
 
 PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" CODEX_HOME="$doctor_home" \
   CODEX_APP_HOME="$doctor_home" bash "$ROOT/doctor.sh" --skip-login >/dev/null
+
+for orca_skill in orca-cli computer-use; do
+  mv "$doctor_home/skills/$orca_skill" "$doctor_home/skills/$orca_skill.missing"
+  set +e
+  doctor_orca_output="$(PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" \
+    CODEX_HOME="$doctor_home" bash "$ROOT/doctor.sh" --skip-login 2>&1)"
+  doctor_orca_status=$?
+  set -e
+  [[ "$doctor_orca_status" -eq 1 ]]
+  grep -Fq "CLI skill missing: $orca_skill" <<< "$doctor_orca_output"
+  mv "$doctor_home/skills/$orca_skill.missing" "$doctor_home/skills/$orca_skill"
+done
 
 find "$doctor_home/skills/go-backend/references" -type f -name 'api-design.md' -delete
 set +e

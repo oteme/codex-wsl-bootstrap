@@ -46,7 +46,7 @@ check_codex_home() {
   local label="$2"
   local skills_dir="$codex_dir/skills"
 
-  for skill_name in gstack-plan-eng-review gstack-review go-backend prd ralph ralph-bootstrap ralph-run; do
+  for skill_name in gstack-plan-eng-review gstack-review go-backend orca-cli computer-use prd ralph ralph-bootstrap ralph-run; do
     check_skill "$skill_name" "$skills_dir" "$label"
   done
 
