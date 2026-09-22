@@ -350,6 +350,8 @@ install_local_skills() {
   local target_skills_dir="$target_codex_dir/skills"
   run mkdir -p "$target_skills_dir"
   install_skill "$SCRIPT_DIR/skills/go-backend" "go-backend" "$target_skills_dir"
+  install_skill "$SCRIPT_DIR/skills/orca-cli" "orca-cli" "$target_skills_dir"
+  install_skill "$SCRIPT_DIR/skills/computer-use" "computer-use" "$target_skills_dir"
 }
 
 install_agents_guidance() {
@@ -466,7 +468,7 @@ validate_app_install_targets() {
   fi
   validate_app_gstack_target "$target_codex_dir"
   validate_app_gstack_skill_targets "$target_codex_dir"
-  for skill_name in prd ralph ralph-bootstrap ralph-run go-backend; do
+  for skill_name in prd ralph ralph-bootstrap ralph-run go-backend orca-cli computer-use; do
     validate_app_managed_skill_target "$target_codex_dir" "$skill_name"
   done
   if [[ -e "$target_codex_dir/AGENTS.md" && ! -f "$target_codex_dir/AGENTS.md" ]] || \

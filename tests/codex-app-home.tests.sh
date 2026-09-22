@@ -84,6 +84,19 @@ set -e
 grep -Fq 'refusing to overwrite an unmanaged App skill' <<< "$unmanaged_skill_output"
 rm -rf "$app_fixture/skills/prd"
 
+for orca_skill in orca-cli computer-use; do
+  mkdir -p "$app_fixture/skills/$orca_skill"
+  printf 'user-owned\n' > "$app_fixture/skills/$orca_skill/SKILL.md"
+  set +e
+  unmanaged_orca_skill_output="$(CODEX_APP_HOME="$valid_app_home" prepare_codex_app_environment; preflight_codex_app_environment 2>&1)"
+  unmanaged_orca_skill_status=$?
+  set -e
+  [[ "$unmanaged_orca_skill_status" -eq 1 ]]
+  grep -Fq "refusing to overwrite an unmanaged App skill: $app_fixture/skills/$orca_skill" \
+    <<< "$unmanaged_orca_skill_output"
+  rm -rf "$app_fixture/skills/$orca_skill"
+done
+
 generated_source="$GSTACK_DIR/.agents/skills/gstack-review"
 mkdir -p "$generated_source" "$app_fixture/skills/gstack-review"
 printf 'generated\n' > "$generated_source/SKILL.md"
