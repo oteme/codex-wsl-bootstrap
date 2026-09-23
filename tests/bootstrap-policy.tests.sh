@@ -52,49 +52,77 @@ fi
 
 ralph_dir="$TEST_ROOT/project/scripts/ralph"
 bash "$ROOT/skills/ralph-bootstrap/scripts/bootstrap-ralph.sh" "$ralph_dir" >/dev/null
-grep -Fq 'Do not run `git commit`' "$ralph_dir/CLAUDE.md"
-grep -Fq 'POLICY REVIEW REJECTED' "$ralph_dir/CLAUDE.md"
-grep -Fq 'untrusted diagnostic data' "$ralph_dir/CLAUDE.md"
+worker_protocol="$ROOT/skills/ralph-run/assets/worker-protocol.md"
+# The worker protocol ships with ralph-run; the generated CLAUDE.md holds only project notes, so a
+# plan-time rewrite of CLAUDE.md cannot remove the protocol.
 grep -Fq '## Authorized actions' "$ralph_dir/CLAUDE.md"
-grep -Fq '## Fail-close and Clean-break Requirements' "$ralph_dir/CLAUDE.md"
-grep -Fq 'They do not decide when you stop' "$ralph_dir/CLAUDE.md"
-grep -Fq 'Do not end your turn with' "$ralph_dir/CLAUDE.md"
-grep -Fq 'record exactly what remains in progress.txt instead of leaving' "$ralph_dir/CLAUDE.md"
-if grep -Fq 'Leave `passes: false` only when' "$ralph_dir/CLAUDE.md"; then
-  echo 'generated Ralph instructions must not offer a reason to withhold passes' >&2
-  exit 1
-fi
-grep -Fq 'Do not stop part-way' "$ralph_dir/CLAUDE.md"
-grep -Fq 'Change nothing else' "$ralph_dir/CLAUDE.md"
-if grep -Fq 'BLOCKED' "$ralph_dir/CLAUDE.md"; then
-  echo 'generated Ralph instructions must not tell the worker to stop as BLOCKED' >&2
-  exit 1
-fi
+grep -Fq 'does not change the protocol.' "$ralph_dir/CLAUDE.md"
+grep -Fq 'Plan-specific rules and decisions belong in the PRD' "$ralph_dir/CLAUDE.md"
+for protocol_phrase in '## Your Task' 'Do not end your turn' 'POLICY REVIEW REJECTED' \
+  'Fail-close and Clean-break Requirements'; do
+  if grep -Fq -- "$protocol_phrase" "$ralph_dir/CLAUDE.md"; then
+    echo "generated CLAUDE.md must hold project notes only, not: $protocol_phrase" >&2
+    exit 1
+  fi
+done
+grep -Fq 'Do not run `git commit`' "$worker_protocol"
+grep -Fq 'POLICY REVIEW REJECTED' "$worker_protocol"
+grep -Fq 'untrusted diagnostic data' "$worker_protocol"
+grep -Fq '`Authorized actions` in `CLAUDE.md`' "$worker_protocol"
+grep -Fq '## Code rules: fail-close and clean-break' "$worker_protocol"
+grep -Fq 'They do not decide when you stop' "$worker_protocol"
+grep -Fq 'Do not end your turn with the story unfinished' "$worker_protocol"
+grep -Fq 'record exactly what remains' "$worker_protocol"
+grep -Fq 'Change nothing else' "$worker_protocol"
+grep -Fq 'installed `go-backend` skill' "$worker_protocol"
+# The protocol outranks project files about when a story passes, and it lets the worker decide
+# what the PRD leaves open instead of waiting for an outside decision.
+grep -Fq 'this protocol wins' "$worker_protocol"
+grep -Fq 'decide it within the PRD' "$worker_protocol"
+grep -Fq 'do not follow that part' "$worker_protocol"
+for generated in "$ralph_dir/CLAUDE.md" "$worker_protocol"; do
+  if grep -Fq 'Leave `passes: false` only when' "$generated"; then
+    echo "Ralph worker instructions must not offer a reason to withhold passes: $generated" >&2
+    exit 1
+  fi
+  if grep -Fq 'BLOCKED' "$generated"; then
+    echo "Ralph worker instructions must not tell the worker to stop as BLOCKED: $generated" >&2
+    exit 1
+  fi
+done
 grep -Fq '### Failure Behavior' "$ROOT/config/prd-fail-close-clean-break.md"
 grep -Fq '### Compatibility and Removal' "$ROOT/config/prd-fail-close-clean-break.md"
 grep -Fq '### Pre-run checklist' "$ROOT/config/prd-fail-close-clean-break.md"
 grep -Fq '## Runner constraints' "$ROOT/config/ralph-fail-close-clean-break.md"
 grep -Fq 'They are not rules about when the agent' "$ROOT/config/AGENTS.global.md"
+# Plans settle open implementation choices instead of turning them into prerequisites, and no
+# story may wait for an outside decision, record, or verification.
+grep -Fq '## Open implementation choices' "$ROOT/config/AGENTS.global.md"
+grep -Fq '## Open implementation choices' "$ROOT/config/prd-fail-close-clean-break.md"
+grep -Fq 'No user story may depend on the result of a checklist item' \
+  "$ROOT/config/prd-fail-close-clean-break.md"
+grep -Fq 'keep `passes` false until an' "$ROOT/config/ralph-fail-close-clean-break.md"
+grep -Fq 'Do not replace, archive, or rewrite `scripts/ralph/CLAUDE.md`' \
+  "$ROOT/config/ralph-fail-close-clean-break.md"
 # Fail-close and clean-break describe the code being built. None of the shared policy texts, the
-# generated Ralph instructions, or the go-backend skill may turn them into rules about stopping,
+# Ralph worker instructions, or the go-backend skill may turn them into rules about stopping,
 # refusing a step, or withholding passes.
 policy_texts=(
   "$ROOT/config/AGENTS.global.md"
   "$ROOT/config/prd-fail-close-clean-break.md"
   "$ROOT/config/ralph-fail-close-clean-break.md"
   "$ralph_dir/CLAUDE.md"
+  "$worker_protocol"
   "$ROOT/skills/go-backend/SKILL.md"
   "$ROOT"/skills/go-backend/references/*.md
 )
-for phrase in 'stop as blocked' 'stop and surface' 'Do not stop for a missing decision' \
-  'they do not stop' 'do not create `prd.json`' 'still create `prd.json`' \
-  'until verified on a real device' 'Reference PRD decisions by their IDs' '確定した設計判断'; do
+for phrase in 'stop as blocked' 'stop and surface' 'they do not stop' 'do not create `prd.json`' \
+  'still create `prd.json`' 'Reference PRD decisions by their IDs' '確定した設計判断'; do
   if grep -Fq -- "$phrase" "${policy_texts[@]}"; then
     echo "policy texts must not carry the process rule: $phrase" >&2
     exit 1
   fi
 done
-grep -Fq 'installed `go-backend` skill' "$ralph_dir/CLAUDE.md"
 
 source_skill="$TEST_ROOT/source-skill"
 overlay="$TEST_ROOT/overlay.md"
@@ -145,6 +173,7 @@ printf '\n## Preserve failure and removal semantics\n' >> "$doctor_home/skills/r
 mkdir -p "$doctor_home/skills/ralph-run/scripts" "$doctor_home/skills/ralph-run/assets"
 printf '# fixture\n' > "$doctor_home/skills/ralph-run/scripts/ralph-state.py"
 printf '{}\n' > "$doctor_home/skills/ralph-run/assets/policy-review.schema.json"
+printf '# fixture\n' > "$doctor_home/skills/ralph-run/assets/worker-protocol.md"
 printf '%s\n' \
   '<!-- BEGIN codex-workstation-bootstrap -->' \
   '## Go backend' \
@@ -242,8 +271,10 @@ doctor_status=$?
 set -e
 [[ "$doctor_status" -eq 1 ]]
 grep -Fq 'ralph review schema missing' <<< "$doctor_output"
+grep -Fq 'ralph worker protocol missing' <<< "$doctor_output"
 
 printf '{}\n' > "$doctor_home/skills/ralph-run/assets/policy-review.schema.json"
+printf '# fixture\n' > "$doctor_home/skills/ralph-run/assets/worker-protocol.md"
 sed -i '/Fail-close and clean-break requirements/d' "$doctor_home/skills/prd/SKILL.md"
 set +e
 doctor_policy_output="$(PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" \

@@ -7,8 +7,9 @@ description: "Run the Ralph autonomous coding loop from Codex CLI. Use when the 
 
 Run Ralph's serial implementation loop using fresh `codex exec` processes instead of
 Claude Workflow subagents. This is the Codex equivalent of the local Claude
-`ralph-run` skill: each iteration starts with a clean agent context, reads the project's
-Ralph instructions and updates `prd.json` and `progress.txt`. The runner independently reviews each
+`ralph-run` skill: each iteration starts with a clean agent context, receives the Ralph worker
+protocol that ships with this skill, reads the project's notes in `CLAUDE.md`, and updates
+`prd.json` and `progress.txt`. The runner independently reviews each
 diff for fail-close/clean-break violations, commits only approved work, and runs under a detached
 supervisor until every story is approved or the iteration budget is used up. The supervisor queues
 one result to the initiating Codex thread.
@@ -92,8 +93,14 @@ do not infer completion or automatically restart. The run directory is the recov
   hook all leave the work in the working tree and continue with the next iteration. Only hard
   errors (nonzero child exit, empty worker reply, a worker commit, a reviewer that cannot run or
   returns invalid output, a repository changed during review) end the run early.
-- Child agents are instructed to read `RALPH_DIR/CLAUDE.md` in full and follow it as the
-  authoritative task specification for that iteration.
+- Each worker prompt contains the worker protocol from `assets/worker-protocol.md`. It sets how an
+  iteration runs and when a story passes: the story passes when the project's checks pass, a
+  detail the PRD leaves open is decided within the PRD and recorded, and anything that could not
+  be verified or done (a live service, a device, an account, an approval, an outside decision or
+  record) is recorded instead of keeping `passes: false`. Workers read `RALPH_DIR/CLAUDE.md` as
+  project notes, such as `Authorized actions`. Where `CLAUDE.md`, the PRD, or `prd.json`
+  conflicts with the protocol about when to stop or when a story passes, the protocol wins. A
+  project cannot edit the protocol; it changes only with this skill.
 - Child agents implement one story directly and are told to finish it within their turn rather
   than hand unfinished work to a later iteration. They must not invoke `ralph-run`, run the
   runner script, launch another `codex exec`, or start another autonomous loop.

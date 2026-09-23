@@ -39,6 +39,15 @@ create `tasks/prd-[feature-name].md`, then `ralph` to convert it into
 For an engineering plan workflow, a useful sequence is:
 `gstack-plan-eng-review` -> `ralph-bootstrap` -> `prd` -> `ralph` -> `ralph-run`.
 
+## Open implementation choices
+
+In plans, specs, and PRDs, settle the implementation choices the work needs (which runtime,
+service, library, format, or method): ask the user with options and a recommendation, or choose
+the recommended option and record it with its reason. Do not turn an open choice into a spike, a
+release blocker, a pre-run prerequisite, or a condition that keeps an implementation story
+incomplete. A condition for switching something on in production can stay in the plan as a
+release step; it does not hold back implementation work.
+
 ## Go backend
 
 Go is the default backend language. For plans, implementation, or reviews involving Go backend
