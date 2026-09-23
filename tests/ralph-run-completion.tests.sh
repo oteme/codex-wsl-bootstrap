@@ -311,6 +311,17 @@ grep -Fq 'completed=1' <<< "$second_output"
 grep -Fq 'iterationsRun=2' <<< "$second_output"
 grep -Fq 'You are the implementation worker for one Ralph story.' "$MOCK_PROMPTS_FILE"
 grep -Fq 'Complete the selected story in this turn' "$MOCK_PROMPTS_FILE"
+# The worker protocol ships with the runner and outranks the project's CLAUDE.md, so a plan-time
+# rewrite of CLAUDE.md cannot decide when a story passes.
+grep -Fq 'Follow the Ralph worker protocol below' "$MOCK_PROMPTS_FILE"
+grep -Fq '# Ralph worker protocol' "$MOCK_PROMPTS_FILE"
+grep -Fq 'this protocol wins' "$MOCK_PROMPTS_FILE"
+grep -Fq 'decide it within the PRD' "$MOCK_PROMPTS_FILE"
+grep -Fq "Read $second_root/scripts/ralph/CLAUDE.md in full as this project's notes" "$MOCK_PROMPTS_FILE"
+if grep -Fq 'complete and authoritative task specification' "$MOCK_PROMPTS_FILE"; then
+  echo 'the worker prompt must not let CLAUDE.md outrank the worker protocol' >&2
+  exit 1
+fi
 grep -Fq 'independent fail-close and clean-break policy reviewer' "$MOCK_PROMPTS_FILE"
 grep -Fq 'This is a static policy diff review.' "$MOCK_PROMPTS_FILE"
 grep -Fq 'managers, or any command that creates or modifies files.' "$MOCK_PROMPTS_FILE"
@@ -765,6 +776,27 @@ grep -Fq 'iterationsRun=10' <<< "$circuit_breaker_output"
 [[ "$(grep -c '^review$' "$MOCK_CALLS_FILE")" -eq 10 ]]
 [[ "$(grep -c 'POLICY REVIEW REJECTED' "$circuit_breaker_root/scripts/ralph/progress.txt")" -eq 10 ]]
 
+missing_protocol_root="$TEST_ROOT/missing-protocol"
+make_fixture "$missing_protocol_root"
+cp -R "$TEST_ROOT/skill" "$TEST_ROOT/skill-without-protocol"
+rm "$TEST_ROOT/skill-without-protocol/assets/worker-protocol.md"
+export MOCK_MODE="approve"
+export MOCK_CALLS_FILE="$TEST_ROOT/missing-protocol-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/missing-protocol-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+# Without its protocol the runner fails before any worker starts.
+set +e
+missing_protocol_output="$(cd "$missing_protocol_root" \
+  && bash "$TEST_ROOT/skill-without-protocol/scripts/ralph-run-codex.sh" 1 2>&1)"
+missing_protocol_status=$?
+set -e
+[[ "$missing_protocol_status" -eq 1 ]]
+grep -Fq 'Ralph policy gate files are missing' <<< "$missing_protocol_output"
+grep -Fq 'missing: ' <<< "$missing_protocol_output"
+grep -Fq 'assets/worker-protocol.md' <<< "$missing_protocol_output"
+[[ ! -s "$MOCK_CALLS_FILE" ]]
+
 set +e
 nested_output="$(cd "$reject_root" && RALPH_RUN_ACTIVE=1 bash "$RUNNER" 3 2>&1)"
 nested_status=$?
@@ -786,4 +818,4 @@ assert result.returncode != 0
 assert 'another Ralph runner is already active' in result.stderr
 PY
 
-printf 'PASS: policy rejection/repair, budget-bounded continuation, sanitized prd.json, dirty tree absorption, failure rollback, commit gate, and recursion guard.\n'
+printf 'PASS: runner-owned worker protocol, policy rejection/repair, budget-bounded continuation, sanitized prd.json, dirty tree absorption, failure rollback, commit gate, and recursion guard.\n'

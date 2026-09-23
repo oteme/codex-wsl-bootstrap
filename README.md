@@ -135,13 +135,24 @@ References: [Codex MCP](https://developers.openai.com/codex/mcp),
 
 ## Ralph policy gate
 
-`ralph-bootstrap` generates project instructions whose fail-close and clean-break rules describe
-the code the worker writes: no speculative fallback, no compatibility path the story does not
-require, obsolete paths removed, no weakened tests. They do not tell the worker when to stop or
-whether a story passes. The instructions carry an `Authorized actions` list for external
-resources. The installed `prd` skill requires explicit failure behavior and compatibility
-decisions, plus a pre-run checklist for work only a person can do; the `ralph` skill carries those
-decisions into acceptance criteria only where a story implements them.
+`ralph-run` gives every worker the Ralph worker protocol that ships with the skill
+(`skills/ralph-run/assets/worker-protocol.md`). It sets how an iteration runs and when a story
+passes: the story passes when the project's checks pass, a detail the PRD leaves open is decided
+within the PRD and recorded, and anything that could not be verified or done (a live service, a
+device, an account, an approval, an outside decision or record) is recorded in `progress.txt`
+instead of keeping `passes: false`. Its fail-close and clean-break rules describe the code the
+worker writes: no speculative fallback, no compatibility path the story does not require, obsolete
+paths removed, no weakened tests. Where the project's `scripts/ralph/CLAUDE.md`, the PRD, or
+`prd.json` conflicts with the protocol about when to stop or when a story passes, the protocol
+wins, and a project cannot edit it. `ralph-bootstrap` generates `CLAUDE.md` as project notes with
+an `Authorized actions` list for external resources.
+
+The installed `prd` skill requires explicit failure behavior and compatibility decisions, settles
+open implementation choices in the PRD instead of turning them into spikes or prerequisites, and
+keeps a pre-run checklist for work only a person can do that no story may depend on. The `ralph`
+skill carries those decisions into acceptance criteria only where a story implements them, writes
+no criterion or instruction that keeps `passes` false for an outside decision or verification,
+and leaves `CLAUDE.md` unchanged when converting a PRD.
 
 During `ralph-run`, workers leave each story uncommitted. A fresh Codex process statically reviews
 the exact staged diff in a disposable detached Git worktree for swallowed failures, unrequested

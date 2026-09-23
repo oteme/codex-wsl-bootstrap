@@ -24,15 +24,19 @@ bash ~/.codex/skills/ralph-bootstrap/scripts/bootstrap-ralph.sh
 
 The script creates:
 
-- `scripts/ralph/CLAUDE.md`
+- `scripts/ralph/CLAUDE.md` (project notes with an `Authorized actions` list)
 - `scripts/ralph/progress.txt`
 - `scripts/ralph/archive/`
 - `scripts/ralph/logs/`
 
 It also creates `scripts/ralph/.gitignore` for runner logs.
 
-The generated instructions make commits conditional on an independent fail-close/clean-break
-review performed by `ralph-run`; workers never commit directly.
+The worker protocol (how an iteration runs, when a story passes, the fail-close/clean-break code
+rules, and that workers never commit because `ralph-run` commits only after an independent review)
+ships with the `ralph-run` skill, not in `CLAUDE.md`. Keep `CLAUDE.md` for notes that apply to the
+project across plans; plan-specific rules belong in the PRD and `prd.json`. An existing
+`CLAUDE.md` from an older bootstrap keeps working, and the protocol takes precedence over it about
+when to stop or when a story passes.
 
 ## Boundaries
 

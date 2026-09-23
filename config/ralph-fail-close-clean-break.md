@@ -18,3 +18,16 @@ behave. Carry them into acceptance criteria only where a story implements them.
 - Leave out work that only a person can do (their accounts, devices, one-time external setup,
   manual approvals, live verification on real services); it belongs in the PRD's pre-run
   checklist. Every story must be completable by an unattended worker.
+- Do not write acceptance criteria, notes, or instructions that keep `passes` false until an
+  outside decision, record, approval, credential, measurement, or live verification exists, and
+  do not add ordering gates such as "all earlier stories must pass before starting". Order is
+  expressed by `priority`. A criterion may still require the code to return an error when such an
+  input is missing.
+- If a story needs an implementation choice the PRD leaves open, settle it before writing
+  `prd.json`: ask the user with options and a recommendation, or choose the recommended option
+  within the PRD's goals and Non-Goals, and record the choice in the PRD. If no option fits, leave
+  the story out and tell the user.
+- Do not replace, archive, or rewrite `scripts/ralph/CLAUDE.md` when converting a PRD. It holds
+  project notes such as `Authorized actions`; the worker protocol comes with the `ralph-run`
+  skill, and plan-specific rules belong in the PRD and `prd.json`. Archive only `prd.json` and
+  `progress.txt`.

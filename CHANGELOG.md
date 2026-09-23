@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.6.1.0] - 2026-09-23
+
+### Fixed
+
+- The Ralph worker protocol now ships with the `ralph-run` skill (`assets/worker-protocol.md`), and the runner puts it in every worker prompt. Before, it lived only in the project's `scripts/ralph/CLAUDE.md`, which the runner called the worker's complete and authoritative specification. On 2026-09-23 the `ralph` conversion of a new plan replaced that file, dropped the rules that let a story pass with unverified items recorded, and added "leave `passes:false` until the runtime decision exists". The run then spent 39 of its 76 iterations on that one story without changing code.
+- Where `CLAUDE.md`, the PRD, or `prd.json` conflicts with the protocol about when to stop or when a story passes, the protocol wins. Workers again decide details the PRD leaves open within its goals and Non-Goals and record the decision. They do not keep `passes: false` while waiting for an outside decision, record, approval, credential, measurement, or live verification. Product failure behavior, such as returning an error when a required record is missing, is still implemented.
+- The `ralph` overlay again forbids criteria and instructions that keep `passes` false until an outside item exists, and ordering gates. It settles open implementation choices before writing `prd.json` and no longer replaces, archives, or rewrites `CLAUDE.md`; only `prd.json` and `progress.txt` are archived. 0.4.3.0 removed the gating rule as a mere counter to the old stop rules, but the stop pattern returned without them.
+- The `prd` overlay and the shared AGENTS guidance settle implementation choices (runtime, service, library, format, method) in the plan or PRD. They no longer turn an open choice into a spike, release blocker, or pre-run prerequisite, and no story may depend on a pre-run checklist item.
+
+### Changed
+
+- `ralph-bootstrap` generates `CLAUDE.md` as project notes with only an `Authorized actions` list. An existing `CLAUDE.md` from an older bootstrap keeps working; the protocol takes precedence over it about when to stop or when a story passes.
+- The runner fails before the first iteration when the worker protocol is missing, and Doctor checks that it is installed.
+
 ## [0.6.0.0] - 2026-09-23
 
 ### Added

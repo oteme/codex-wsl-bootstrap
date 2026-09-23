@@ -70,6 +70,7 @@ check_codex_home() {
     "${label}ralph fail-close/clean-break policy"
   check_file "$skills_dir/ralph-run/scripts/ralph-state.py" "${label}ralph state gate"
   check_file "$skills_dir/ralph-run/assets/policy-review.schema.json" "${label}ralph review schema"
+  check_file "$skills_dir/ralph-run/assets/worker-protocol.md" "${label}ralph worker protocol"
   check_text "$codex_dir/AGENTS.md" '## Fail-close and clean-break' \
     "${label}shared fail-close/clean-break guidance"
   check_text "$codex_dir/AGENTS.md" '## Go backend' \

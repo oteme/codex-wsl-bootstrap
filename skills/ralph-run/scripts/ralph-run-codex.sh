@@ -127,16 +127,23 @@ esac
 
 STATE_TOOL="$SCRIPT_DIR/ralph-state.py"
 REVIEW_SCHEMA="$SCRIPT_DIR/../assets/policy-review.schema.json"
+# The worker protocol ships with this skill so that a plan-time rewrite of the project's
+# CLAUDE.md cannot change when a story passes.
+WORKER_PROTOCOL="$SCRIPT_DIR/../assets/worker-protocol.md"
 
 if ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "error: Ralph runner requires a git worktree: $PROJECT_ROOT" >&2
   exit 1
 fi
 
-if [[ ! -f "$STATE_TOOL" || ! -f "$REVIEW_SCHEMA" ]]; then
+if [[ ! -f "$STATE_TOOL" || ! -f "$REVIEW_SCHEMA" || ! -s "$WORKER_PROTOCOL" ]]; then
   echo "error: Ralph policy gate files are missing; reinstall the ralph-run skill" >&2
+  [[ -f "$STATE_TOOL" ]] || echo "missing: $STATE_TOOL" >&2
+  [[ -f "$REVIEW_SCHEMA" ]] || echo "missing: $REVIEW_SCHEMA" >&2
+  [[ -s "$WORKER_PROTOCOL" ]] || echo "missing: $WORKER_PROTOCOL" >&2
   exit 1
 fi
+worker_protocol="$(cat "$WORKER_PROTOCOL")"
 
 # All entrypoints share one repository lock, including direct runner invocations.
 if ! command -v flock >/dev/null 2>&1; then
@@ -212,10 +219,11 @@ You are the implementation worker for one Ralph story.
 
 Do the implementation work directly in the project. Do not invoke the ralph-run skill, do not run ralph-run-codex.sh, and do not launch another codex exec or autonomous loop.
 
-Read the file $RALPH_DIR/CLAUDE.md in full and execute its instructions exactly as written.
+The Ralph directory is $RALPH_DIR. It holds prd.json, progress.txt, and CLAUDE.md.
 
-That file is your complete and authoritative task specification. The prd.json and progress.txt it refers to live in the same directory:
-$RALPH_DIR
+Follow the Ralph worker protocol below; it comes with the runner, not with the project. Read $RALPH_DIR/CLAUDE.md in full as this project's notes, such as its authorized external actions, and follow it where it does not conflict with the protocol. Where CLAUDE.md, the PRD, or prd.json conflicts with the protocol about when to stop or when a story passes, the protocol wins.
+
+$worker_protocol
 
 Complete the selected story in this turn: keep working until its acceptance criteria and checks pass and you have set its passes to true. Do not stop part-way to hand work to a later turn. In prd.json change only the completed story's passes and notes fields; the outer runner keeps only those changes and discards any other edit, including the top-level description. Do not commit and do not claim that the whole run is complete; the outer runner owns review, commit, and completion.
 $resume_note
