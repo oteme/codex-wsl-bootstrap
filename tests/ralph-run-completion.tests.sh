@@ -1,22 +1,102 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RUNNER="${RUNNER:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/skills/ralph-run/scripts/ralph-run-codex.sh"}"
+# The same scenarios run for every agent: RALPH_TEST_AGENT=codex (default), cursor or antigravity.
+RALPH_TEST_AGENT="${RALPH_TEST_AGENT:-codex}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+case "$RALPH_TEST_AGENT" in
+  codex)
+    RUNNER_NAME="ralph-run-codex.sh"
+    AGENT_COMMAND="codex"
+    AUTONOMY_FLAG="--dangerously-bypass-approvals-and-sandbox"
+    AGENT_FAILURE="codex exec failed"
+    ;;
+  cursor)
+    RUNNER_NAME="ralph-run-cursor.sh"
+    AGENT_COMMAND="agent"
+    AUTONOMY_FLAG="--force"
+    AGENT_FAILURE="agent -p failed"
+    ;;
+  antigravity)
+    RUNNER_NAME="ralph-run-antigravity.sh"
+    AGENT_COMMAND="agy"
+    AUTONOMY_FLAG="--dangerously-skip-permissions"
+    AGENT_FAILURE="agy -p failed"
+    ;;
+  *)
+    echo "unknown RALPH_TEST_AGENT: $RALPH_TEST_AGENT" >&2
+    exit 2
+    ;;
+esac
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
+# Ralph model settings live in the agent homes; keep this machine's own settings out of the runs.
+export HOME="$TEST_ROOT/home"
+unset CODEX_HOME RALPH_MODEL RALPH_REVIEW_MODEL
+mkdir -p "$HOME"
 
 # Isolate the installed runtime; the executable shim uses the existing exported mock.
-cp -R "$(dirname "$RUNNER")/.." "$TEST_ROOT/skill"
-RUNNER="$TEST_ROOT/skill/scripts/ralph-run-codex.sh"
-printf '%s\n' '#!/usr/bin/env bash' 'codex "$@"' > "$TEST_ROOT/mock-codex"
-chmod +x "$TEST_ROOT/mock-codex"
-python3 - "$TEST_ROOT" <<'PY_RUNTIME'
+if [[ "$RALPH_TEST_AGENT" == "codex" ]]; then
+  RUNNER="${RUNNER:-"$REPO_ROOT/skills/ralph-run/scripts/ralph-run-codex.sh"}"
+  cp -R "$(dirname "$RUNNER")/.." "$TEST_ROOT/skill"
+else
+  # The skill is assembled exactly as setup assembles it.
+  (source "$REPO_ROOT/install.sh" && stage_agent_ralph_skill "$RALPH_TEST_AGENT" "$TEST_ROOT/skill")
+fi
+RUNNER="$TEST_ROOT/skill/scripts/$RUNNER_NAME"
+printf '%s\n' '#!/usr/bin/env bash' "$AGENT_COMMAND \"\$@\"" > "$TEST_ROOT/mock-agent"
+chmod +x "$TEST_ROOT/mock-agent"
+python3 - "$TEST_ROOT" "$RALPH_TEST_AGENT" <<'PY_RUNTIME'
 import json, pathlib, sys
-root = pathlib.Path(sys.argv[1])
-(root / 'skill/scripts/codex-runtime.json').write_text(json.dumps({
-    'schema': 1, 'codex': str(root / 'mock-codex'), 'setup_version': 'fixture',
+root, agent = pathlib.Path(sys.argv[1]), sys.argv[2]
+(root / f'skill/scripts/{agent}-runtime.json').write_text(json.dumps({
+    'schema': 1, agent: str(root / 'mock-agent'), 'setup_version': 'fixture',
 }))
 PY_RUNTIME
+
+# Turns the shared fake agent's final message into what Cursor or agy prints.
+export MOCK_REPLY_TOOL="$TEST_ROOT/mock-reply.py"
+cat > "$MOCK_REPLY_TOOL" <<'PY_REPLY'
+import json
+import os
+import subprocess
+import sys
+
+kind, message_path, cwd, role = sys.argv[1:5]
+mode = os.environ.get('MOCK_MODE', '')
+text = open(message_path, encoding='utf-8').read()
+review = None
+if role == 'review':
+    review = json.loads(text)
+    tree = subprocess.check_output(['git', '-C', cwd, 'write-tree'], text=True).strip()
+    review['reviewed_tree'] = '0' * 40 if mode == 'review-wrong-tree' else tree
+if kind == 'cursor':
+    if review is not None:
+        text = json.dumps(review)
+        if mode == 'review-fenced':
+            text = '```json\n' + text + '\n```'
+    for event in [
+        {'type': 'system', 'subtype': 'init'},
+        {'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'Working on it.'}]}},
+        {'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': text}]}},
+        {'type': 'result', 'subtype': 'success', 'is_error': mode == 'cursor-unsuccessful',
+         'session_id': 'fixture'},
+    ]:
+        print(json.dumps(event))
+else:
+    reply = {'conversation_id': 'fixture',
+             'status': 'ERROR' if mode == 'agy-status-error' else 'SUCCESS', 'response': text}
+    if review is not None:
+        if '--json-schema' not in os.environ.get('MOCK_AGY_ARGS', ''):
+            sys.exit('the agy reviewer must be constrained with --json-schema')
+        reply['structured_output'] = review
+        reply['response'] = json.dumps(review)
+    if mode == 'agy-auto-denied':
+        print('jetski: no output produced - a tool required the "command" permission that headless '
+              'mode cannot prompt for, so it was auto-denied.', file=sys.stderr)
+        reply['response'] = ''
+    print(json.dumps(reply))
+PY_REPLY
 
 mktemp() {
   if [[ "${MOCK_MKTEMP_FAILURE:-0}" == "1" ]]; then
@@ -34,36 +114,25 @@ git() {
 
 export -f mktemp git
 
-[[ "$(grep -Fc -- '--dangerously-bypass-approvals-and-sandbox' "$RUNNER")" -eq 2 ]]
+[[ "$(grep -Fc -- "$AUTONOMY_FLAG" "$RUNNER")" -eq 2 ]]
 if grep -Fq -- '--sandbox read-only' "$RUNNER"; then
   echo 'reviewer must not use the read-only sandbox' >&2
   exit 1
 fi
 
-codex() {
-  local last_message=""
-  local codex_cwd=""
-  local prompt="${*: -1}"
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      --cd)
-        codex_cwd="$2"
-        shift 2
-        ;;
-      --output-last-message)
-        last_message="$2"
-        shift 2
-        ;;
-      *) shift ;;
-    esac
-  done
+# Shared fake agent: working directory, prompt, final-message file, main worktree.
+agent_behavior() {
+  local codex_cwd="$1"
+  local prompt="$2"
+  local last_message="$3"
+  local main_worktree="$4"
 
   printf '%s\n' "$prompt" >> "$MOCK_PROMPTS_FILE"
 
   if [[ "$prompt" == *"independent fail-close and clean-break policy reviewer"* ]]; then
     printf 'review\n' >> "$MOCK_CALLS_FILE"
     printf '%s\n' "$codex_cwd" >> "$MOCK_REVIEW_CWDS_FILE"
-    if [[ "$codex_cwd" == "$PWD" ]]; then
+    if [[ "$codex_cwd" == "$main_worktree" ]]; then
       return 8
     fi
     if ! git -C "$codex_cwd" diff --cached --name-only | grep -Fxq 'app.txt'; then
@@ -108,6 +177,10 @@ codex() {
   fi
 
   printf 'worker\n' >> "$MOCK_CALLS_FILE"
+  if [[ "$MOCK_MODE" == "spawn-child" ]]; then
+    sleep 30 < /dev/null > /dev/null 2>&1 &
+    printf '%s\n' "$!" >> "$MOCK_CHILD_PIDS"
+  fi
   if [[ "$MOCK_MODE" == "empty" ]]; then
     : > "$last_message"
     return 0
@@ -196,6 +269,108 @@ PY
   printf 'worker finished\n' > "$last_message"
 }
 
+# Codex: --cd and --output-last-message; the prompt is the last argument.
+codex() {
+  local last_message=""
+  local codex_cwd=""
+  local model=""
+  local prompt="${*: -1}"
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --cd)
+        codex_cwd="$2"
+        shift 2
+        ;;
+      --output-last-message)
+        last_message="$2"
+        shift 2
+        ;;
+      --model)
+        model="$2"
+        shift 2
+        ;;
+      *) shift ;;
+    esac
+  done
+  printf '%s %s\n' "$(agent_role "$prompt")" "${model:--}" >> "$MOCK_MODELS_FILE"
+  agent_behavior "$codex_cwd" "$prompt" "$last_message" "$PWD"
+}
+
+agent_role() {
+  if [[ "$1" == *"independent fail-close and clean-break policy reviewer"* ]]; then
+    printf 'review\n'
+  else
+    printf 'worker\n'
+  fi
+}
+
+# Cursor CLI: --workspace; the prompt is the last argument; stream-json on stdout.
+agent() {
+  local workspace=""
+  local model=""
+  local prompt="${*: -1}"
+  local message status
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --workspace)
+        workspace="$2"
+        shift 2
+        ;;
+      --model)
+        model="$2"
+        shift 2
+        ;;
+      *) shift ;;
+    esac
+  done
+  printf '%s %s\n' "$(agent_role "$prompt")" "${model:--}" >> "$MOCK_MODELS_FILE"
+  message="$(command mktemp)"
+  agent_behavior "$workspace" "$prompt" "$message" "$PWD"
+  status=$?
+  if [[ "$status" -eq 0 ]]; then
+    python3 "$MOCK_REPLY_TOOL" cursor "$message" "$workspace" "$(agent_role "$prompt")"
+    status=$?
+  fi
+  rm -f "$message"
+  return "$status"
+}
+
+# Antigravity CLI: runs in the current directory; the prompt directly follows -p; one JSON reply.
+agy() {
+  local prompt=""
+  local model=""
+  local message status main_worktree
+  export MOCK_AGY_ARGS="$*"
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      -p)
+        prompt="$2"
+        shift 2
+        ;;
+      --print-timeout)
+        echo 'the runner must not pass --print-timeout' >&2
+        return 9
+        ;;
+      --model)
+        model="$2"
+        shift 2
+        ;;
+      *) shift ;;
+    esac
+  done
+  printf '%s %s\n' "$(agent_role "$prompt")" "${model:--}" >> "$MOCK_MODELS_FILE"
+  main_worktree="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+  message="$(command mktemp)"
+  agent_behavior "$PWD" "$prompt" "$message" "$main_worktree"
+  status=$?
+  if [[ "$status" -eq 0 ]]; then
+    python3 "$MOCK_REPLY_TOOL" antigravity "$message" "$PWD" "$(agent_role "$prompt")"
+    status=$?
+  fi
+  rm -f "$message"
+  return "$status"
+}
+
 add_second_story() {
   local fixture_root="$1"
   python3 - "$fixture_root/scripts/ralph/prd.json" <<'PY'
@@ -250,7 +425,11 @@ PY
   git -C "$fixture_root" add scripts/ralph/prd.json
   git -C "$fixture_root" commit -qm 'add pending fixture stories'
 }
-export -f codex
+export -f agent_behavior codex agent_role agent agy
+export MOCK_CHILD_PIDS="$TEST_ROOT/child-pids.txt"
+: > "$MOCK_CHILD_PIDS"
+export MOCK_MODELS_FILE="$TEST_ROOT/models.txt"
+: > "$MOCK_MODELS_FILE"
 export MOCK_REVIEW_CWDS_FILE="$TEST_ROOT/reviewer-cwds.txt"
 : > "$MOCK_REVIEW_CWDS_FILE"
 
@@ -620,7 +799,7 @@ worker_error_output="$(cd "$worker_error_root" && bash "$RUNNER" 1 2>&1)"
 worker_error_status=$?
 set -e
 [[ "$worker_error_status" -eq 6 ]]
-grep -Fq 'codex exec failed' <<< "$worker_error_output"
+grep -Fq "$AGENT_FAILURE" <<< "$worker_error_output"
 cmp "$TEST_ROOT/worker-error-before.json" "$worker_error_root/scripts/ralph/prd.json"
 
 empty_after_root="$TEST_ROOT/empty-after"
@@ -788,7 +967,7 @@ export MOCK_PROMPTS_FILE="$TEST_ROOT/missing-protocol-prompts.txt"
 # Without its protocol the runner fails before any worker starts.
 set +e
 missing_protocol_output="$(cd "$missing_protocol_root" \
-  && bash "$TEST_ROOT/skill-without-protocol/scripts/ralph-run-codex.sh" 1 2>&1)"
+  && bash "$TEST_ROOT/skill-without-protocol/scripts/$RUNNER_NAME" 1 2>&1)"
 missing_protocol_status=$?
 set -e
 [[ "$missing_protocol_status" -eq 1 ]]
@@ -818,4 +997,155 @@ assert result.returncode != 0
 assert 'another Ralph runner is already active' in result.stderr
 PY
 
-printf 'PASS: runner-owned worker protocol, policy rejection/repair, budget-bounded continuation, sanitized prd.json, dirty tree absorption, failure rollback, commit gate, and recursion guard.\n'
+
+# Without Ralph model settings no call names a model, so every agent keeps its CLI default.
+[[ -s "$MOCK_MODELS_FILE" ]]
+if grep -qv -- ' -$' "$MOCK_MODELS_FILE"; then
+  echo 'a model was passed without any Ralph model setting' >&2
+  exit 1
+fi
+
+case "$RALPH_TEST_AGENT" in
+  codex) model_settings="$HOME/.codex/ralph.json" ;;
+  cursor) model_settings="$HOME/.cursor/ralph.json" ;;
+  antigravity) model_settings="$HOME/.gemini/antigravity-cli/ralph.json" ;;
+esac
+mkdir -p "$(dirname "$model_settings")"
+
+# run_model_scenario NAME [ENV...]: one approved story; output in $model_output.
+run_model_scenario() {
+  local name="$1"
+  shift
+  model_root="$TEST_ROOT/$name"
+  make_fixture "$model_root"
+  export MOCK_MODE="approve"
+  export MOCK_CALLS_FILE="$TEST_ROOT/$name-calls.txt"
+  export MOCK_PROMPTS_FILE="$TEST_ROOT/$name-prompts.txt"
+  : > "$MOCK_CALLS_FILE"
+  : > "$MOCK_PROMPTS_FILE"
+  : > "$MOCK_MODELS_FILE"
+  model_output="$(cd "$model_root" && env "$@" bash "$RUNNER" 1)"
+  grep -Fq 'completed=1' <<< "$model_output"
+}
+
+# Saved Ralph models reach the worker and the reviewer.
+printf '{"model": "saved-worker", "review_model": "saved-reviewer"}\n' > "$model_settings"
+run_model_scenario saved-models
+grep -Fq 'Ralph models: worker=saved-worker reviewer=saved-reviewer' <<< "$model_output"
+[[ "$(sort "$MOCK_MODELS_FILE" | paste -sd '|')" == "review saved-reviewer|worker saved-worker" ]]
+# A run override replaces only its own role.
+run_model_scenario run-model RALPH_MODEL=run-worker
+[[ "$(sort "$MOCK_MODELS_FILE" | paste -sd '|')" == "review saved-reviewer|worker run-worker" ]]
+# Without a reviewer model the reviewer uses the worker's.
+printf '{"model": "saved-worker"}\n' > "$model_settings"
+run_model_scenario worker-only-model
+[[ "$(sort "$MOCK_MODELS_FILE" | paste -sd '|')" == "review saved-worker|worker saved-worker" ]]
+# Invalid settings stop the runner before any agent call.
+printf '{"model": "has space"}\n' > "$model_settings"
+model_error_root="$TEST_ROOT/invalid-model-settings"
+make_fixture "$model_error_root"
+export MOCK_CALLS_FILE="$TEST_ROOT/invalid-model-settings-calls.txt"
+: > "$MOCK_CALLS_FILE"
+set +e
+model_error_output="$(cd "$model_error_root" && bash "$RUNNER" 1 2>&1)"
+model_error_status=$?
+set -e
+[[ "$model_error_status" -eq 1 ]]
+grep -Fq 'is not a valid model name' <<< "$model_error_output"
+[[ ! -s "$MOCK_CALLS_FILE" ]]
+rm "$model_settings"
+
+spawn_root="$TEST_ROOT/spawn-child"
+make_fixture "$spawn_root"
+export MOCK_MODE="spawn-child"
+export MOCK_CALLS_FILE="$TEST_ROOT/spawn-child-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/spawn-child-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+# Every agent call closes the runner lock, so a process the agent leaves behind cannot hold it.
+spawn_output="$(cd "$spawn_root" && bash "$RUNNER" 1)"
+grep -Fq 'completed=1' <<< "$spawn_output"
+python3 - "$spawn_root" "$MOCK_CHILD_PIDS" <<'PY'
+import fcntl
+import os
+from pathlib import Path
+import signal
+import sys
+
+root, pid_file = sys.argv[1:]
+children = [int(pid) for pid in Path(pid_file).read_text().split()]
+assert children, 'the fake agent left no child process behind'
+try:
+    for pid in children:
+        os.kill(pid, 0)  # The child is still alive while the lock is taken.
+    with (Path(root) / '.git/ralph-run.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+finally:
+    for pid in children:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+PY
+
+# run_failing_scenario NAME MODE BUDGET: runs the runner expecting failure; output in $scenario_output.
+run_failing_scenario() {
+  local name="$1"
+  scenario_root="$TEST_ROOT/$name"
+  make_fixture "$scenario_root"
+  cp "$scenario_root/scripts/ralph/prd.json" "$TEST_ROOT/$name-before.json"
+  export MOCK_MODE="$2"
+  export MOCK_CALLS_FILE="$TEST_ROOT/$name-calls.txt"
+  export MOCK_PROMPTS_FILE="$TEST_ROOT/$name-prompts.txt"
+  : > "$MOCK_CALLS_FILE"
+  : > "$MOCK_PROMPTS_FILE"
+  set +e
+  scenario_output="$(cd "$scenario_root" && bash "$RUNNER" "$3" 2>&1)"
+  scenario_status=$?
+  set -e
+}
+
+if [[ "$RALPH_TEST_AGENT" != "codex" ]]; then
+  # The reviewer must prove it read the staged diff by reporting the staged tree.
+  grep -Fq 'git write-tree' "$TEST_ROOT/second-prompts.txt"
+  grep -Fq 'reviewed_tree' "$TEST_ROOT/second-prompts.txt"
+  run_failing_scenario review-wrong-tree review-wrong-tree 1
+  [[ "$scenario_status" -eq 1 ]]
+  grep -Fq 'invalid policy review output' <<< "$scenario_output"
+  grep -Fq 'POLICY GATE FAILED' "$scenario_root/scripts/ralph/progress.txt"
+  grep -Fq '"passes": false' "$scenario_root/scripts/ralph/prd.json"
+  grep -rFq 'did not report the staged tree' "$scenario_root/scripts/ralph/logs"
+  [[ "$(git -C "$scenario_root" rev-list --count HEAD)" -eq 1 ]]
+fi
+
+if [[ "$RALPH_TEST_AGENT" == "cursor" ]]; then
+  # Cursor has no output schema; the only fenced block of the final message is accepted.
+  fenced_root="$TEST_ROOT/review-fenced"
+  make_fixture "$fenced_root"
+  export MOCK_MODE="review-fenced"
+  export MOCK_CALLS_FILE="$TEST_ROOT/review-fenced-calls.txt"
+  export MOCK_PROMPTS_FILE="$TEST_ROOT/review-fenced-prompts.txt"
+  : > "$MOCK_CALLS_FILE"
+  : > "$MOCK_PROMPTS_FILE"
+  fenced_output="$(cd "$fenced_root" && bash "$RUNNER" 1)"
+  grep -Fq 'completed=1' <<< "$fenced_output"
+  grep -Fq 'Your final message must be exactly one JSON object' "$MOCK_PROMPTS_FILE"
+  # A run that does not end with a successful result event is a failed worker, not a reply.
+  run_failing_scenario cursor-unsuccessful cursor-unsuccessful 1
+  [[ "$scenario_status" -eq 1 ]]
+  grep -Fq "$AGENT_FAILURE" <<< "$scenario_output"
+  cmp "$TEST_ROOT/cursor-unsuccessful-before.json" "$scenario_root/scripts/ralph/prd.json"
+fi
+
+if [[ "$RALPH_TEST_AGENT" == "antigravity" ]]; then
+  # agy exits 0 when headless mode auto-denies a tool or a turn ends without SUCCESS.
+  for mode in agy-auto-denied agy-status-error; do
+    run_failing_scenario "$mode" "$mode" 1
+    [[ "$scenario_status" -eq 1 ]]
+    grep -Fq "$AGENT_FAILURE" <<< "$scenario_output"
+    cmp "$TEST_ROOT/$mode-before.json" "$scenario_root/scripts/ralph/prd.json"
+  done
+  grep -rFq 'auto-denied' "$TEST_ROOT/agy-auto-denied/scripts/ralph/logs"
+fi
+
+printf 'PASS (%s): runner-owned worker protocol, policy rejection/repair, budget-bounded continuation, sanitized prd.json, dirty tree absorption, failure rollback, commit gate, recursion guard, and lock release.\n' "$RALPH_TEST_AGENT"

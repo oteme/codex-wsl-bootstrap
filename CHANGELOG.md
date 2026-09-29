@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.7.0.0] - 2026-09-29
+
+### Added
+
+- Setup now also configures Cursor CLI (`agent`) and Antigravity CLI (`agy`) after the Codex setup is complete. Each CLI is installed with its official installer when missing and updated when it is older than the version verified on 2026-09-29 (Cursor `2026.09.28`, agy `1.2.13`); a CLI that stays older, or reports an unrecognized version, stops the setup.
+- Cursor: the shared guidance is injected into every conversation by a `sessionStart` hook, because Cursor has no user-level instructions file. The RTK Safe Hook runs as a `preToolUse` adapter registered with `failClosed`: it returns only `updated_input` for a rewrite, `{}` when it has no opinion, and an explicit deny for invalid input. Both Chrome DevTools MCP servers are registered in `~/.cursor/mcp.json`. No skills are copied, since Cursor already loads `~/.codex/skills`; setup refuses to run when `CODEX_HOME` is not `~/.codex`.
+- Antigravity: the shared guidance is a managed block in `~/.gemini/AGENTS.md`, `~/.codex/skills` is registered in `~/.gemini/config/skills.json` with Codex's `ralph-run` excluded, the RTK Safe Hook is a `PreToolUse` adapter that rewrites through `overwrite.CommandLine`, and both Chrome DevTools MCP servers are registered in `mcp_config.json`. The 0-byte `mcp_config.json` that agy creates on first run means no servers; any other unreadable file is refused.
+- Ralph runs from both CLIs: `ralph-run-cursor` in Cursor and an Antigravity `ralph-run`. Workers run headless (`agent -p --force --trust --sandbox disabled`, `agy --dangerously-skip-permissions`). The reviewer must report the `git write-tree` of the staged snapshot it reviewed, so a reviewer that could not read the diff cannot approve it. A Cursor run that does not end with a successful `result` event, and an agy run whose status is not `SUCCESS` or whose stderr reports an auto-denied tool, is a hard error. The result is delivered by resuming the initiating conversation once, and counts as `delivered` only when the CLI reports that same conversation back (both CLIs silently start a new conversation for an unknown ID).
+- Doctor checks both CLIs, their versions, hooks, guidance, MCP servers, skills registration and Ralph runtime records, and their logins unless `--skip-login` is given.
+- Ralph can use its own models, separately for the workers and the policy reviewer, in Codex, Cursor and Antigravity. Saved defaults live in `ralph.json` in the agent's home (`$CODEX_HOME`, `~/.cursor`, `~/.gemini/antigravity-cli`), which setup never rewrites, and a run can override them with `--model` and `--review-model`. The reviewer falls back to the worker's model, and without any Ralph model each CLI keeps its own default. Cursor and agy reject a model they do not list before a run starts; an invalid settings file stops the run and fails Doctor.
+
+### Fixed
+
+- The RTK Safe Hook no longer denies allowlisted commands that RTK does not rewrite. RTK 0.46 reports that case with exit status 1, no output and `No rewrite for: <command>` on stderr; the hook treated every non-zero exit as a failure, so Codex denied `npm test`, `bun test`, `bun lint`, `yarn test`, `yarn lint`, `pnpm test`, `tail -f` and `tail -F`. Only that report counts as no rewrite, with RTK's own `[rtk]` notice lines allowed before it (RTK periodically prints `[rtk] /!\ No hook installed ...` because the Safe Hooks are not its own hook); any other failure is still denied. The fake RTK in the tests now behaves like RTK 0.46, and the installed regression scripts check `npm test`, so Doctor reports the problem if it returns.
+
+### Changed
+
+- The Ralph loop moved from `ralph-run-codex.sh` into `ralph-loop.sh`, shared by all three runners; each runner defines only how its CLI is started. The Codex runner keeps its path, arguments, prompts, log names and output lines, which the Claude `ralph-run` Codex mode relies on.
+- `ralph_runtime.py` reads the single `<agent>-runtime.json` next to it; `ralph-notify.py` takes `--conversation` for Cursor and Antigravity and keeps `--thread` for Codex.
+
+### Unchanged
+
+- Codex behavior apart from the RTK fix above and the optional Ralph models; without a `ralph.json` or a run model, Codex runs exactly as before. `config/AGENTS.global.md` and `scripts/install-codex-rtk-hook.py` are unchanged, and the Codex completion scenarios produce the same prompts, output, exit codes, log names and progress entries as before. Because the RTK hook file changes, Codex CLI and Codex App ask once in `/hooks` to trust it again.
+- Windows editors (Cursor and Antigravity IDEs) are not configured.
+
 ## [0.6.1.0] - 2026-09-23
 
 ### Fixed

@@ -11,6 +11,8 @@ readonly RTK_AARCH64_SHA256="e8c2e1787f46017ea7c5a711b2bc6a7f7cf61c7ad69385b4c1e
 readonly MANAGED_MARKER=".codex-workstation-bootstrap-managed"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/agent-cli.sh
+source "$SCRIPT_DIR/scripts/agent-cli.sh"
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 SKILLS_DIR="$CODEX_DIR/skills"
 BOOTSTRAP_STATE_DIR="${BOOTSTRAP_STATE_DIR:-$HOME/.local/share/codex-workstation-bootstrap}"
@@ -30,7 +32,8 @@ usage() {
 Usage: ./install.sh [--dry-run]
 
 Installs Codex CLI, RTK Safe Hook, Bun, gstack, Ralph skills, and shared AGENTS.md guidance
-for an existing Ubuntu/WSL2 environment.
+for an existing Ubuntu/WSL2 environment, then sets up Cursor CLI and Antigravity CLI with the
+same guidance, skills, Chrome MCP servers, RTK Safe Hook and Ralph runner.
 
 Environment overrides:
   CODEX_HOME          Codex data directory (default: ~/.codex)
@@ -108,7 +111,7 @@ download_and_run() {
   installer="$(mktemp)"
   trap 'rm -f "${installer:-}"' RETURN
   curl -fsSL "$url" -o "$installer"
-  NON_INTERACTIVE=1 bash "$installer"
+  NON_INTERACTIVE=1 bash "$installer" "${@:3}"
   rm -f "$installer"
   trap - RETURN
   log "$label installed"
@@ -356,18 +359,24 @@ install_local_skills() {
 
 install_agents_guidance() {
   local target_codex_dir="${1:-$CODEX_DIR}"
-  local agents_file="$target_codex_dir/AGENTS.md"
-  local guidance="$SCRIPT_DIR/config/AGENTS.global.md"
+  install_guidance_block "$target_codex_dir/AGENTS.md" "$SCRIPT_DIR/config/AGENTS.global.md" "Codex"
+}
+
+# Replace the bootstrap-managed block in an instructions file, keeping everything else the user wrote.
+install_guidance_block() {
+  local agents_file="$1"
+  local guidance="$2"
+  local label="$3"
   local filtered
 
-  run mkdir -p "$target_codex_dir"
+  run mkdir -p "$(dirname "$agents_file")"
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "+ update managed block in $agents_file"
     return
   fi
 
   if [[ -L "$agents_file" ]]; then
-    echo "error: refusing to replace symlinked AGENTS.md: $agents_file" >&2
+    echo "error: refusing to replace symlinked $(basename "$agents_file"): $agents_file" >&2
     exit 1
   fi
 
@@ -387,7 +396,7 @@ install_agents_guidance() {
     printf '\n'
   } > "$agents_file"
   rm -f "$filtered"
-  log "Updated shared Codex guidance: $agents_file"
+  log "Updated shared $label guidance: $agents_file"
 }
 
 validate_codex_app_home() {
@@ -553,6 +562,189 @@ preflight_chrome_mcp() {
   fi
 }
 
+# Cursor CLI and Antigravity CLI are set up after the Codex setup is complete and reuse its skills:
+# Cursor loads ~/.codex/skills by itself, and Antigravity registers that directory in skills.json.
+# Each gets its own guidance, hooks, Chrome MCP servers and Ralph runner.
+
+# ensure_agent_cli LABEL COMMAND VERSION_FUNCTION MINIMUM INSTALLER_URL [INSTALLER_ARGS...]
+ensure_agent_cli() {
+  local label="$1" command_name="$2" version_function="$3" minimum="$4" url="$5"
+  local installer_args=("${@:6}")
+  local version=""
+
+  if command -v "$command_name" >/dev/null 2>&1; then
+    if ! version="$("$version_function")"; then
+      echo "error: unrecognized $label version: $("$command_name" --version 2>&1 | head -n 1)" >&2
+      exit 1
+    fi
+    if version_at_least "$version" "$minimum"; then
+      log "$label already present: $version"
+      return
+    fi
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "Would update $label $version to at least $minimum"
+      return
+    fi
+    log "Updating $label $version to at least $minimum"
+    "$command_name" update < /dev/null
+  else
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "Would install $label from the official installer"
+      return
+    fi
+    log "Installing $label"
+    download_and_run "$url" "$label" "${installer_args[@]}"
+    command -v "$command_name" >/dev/null 2>&1 || {
+      echo "error: $label installed, but $command_name is not on PATH; open a new shell and rerun this installer" >&2
+      exit 1
+    }
+  fi
+  if ! version="$("$version_function")" || ! version_at_least "$version" "$minimum"; then
+    echo "error: $label ${version:-with an unrecognized version} is older than the verified minimum $minimum" >&2
+    exit 1
+  fi
+}
+
+ensure_cursor_cli() {
+  ensure_agent_cli "Cursor CLI" agent cursor_version "$CURSOR_MIN_VERSION" "https://cursor.com/install"
+}
+
+ensure_antigravity_cli() {
+  # The flags keep the installer from editing shell profiles; ~/.local/bin is already required on PATH.
+  ensure_agent_cli "Antigravity CLI" agy antigravity_version "$ANTIGRAVITY_MIN_VERSION" \
+    "https://antigravity.google/cli/install.sh" --skip-path --skip-aliases
+}
+
+compose_guidance() {
+  local agent="$1"
+  local output="$2"
+  python3 "$SCRIPT_DIR/scripts/compose-guidance.py" --agent "$agent" \
+    --global-guidance "$SCRIPT_DIR/config/AGENTS.global.md" \
+    --guidance-dir "$SCRIPT_DIR/config/guidance" --output "$output"
+}
+
+# An agent's Ralph skill: its own SKILL.md, runner and assets plus the loop files shared with Codex.
+stage_agent_ralph_skill() {
+  local agent="$1"
+  local stage="$2"
+  local shared="$SCRIPT_DIR/skills/ralph-run"
+  mkdir -p "$stage/scripts" "$stage/assets"
+  (cd "$SCRIPT_DIR/skills/ralph-run-$agent" && tar --exclude='__pycache__' -cf - .) \
+    | (cd "$stage" && tar -xf -)
+  cp -p "$shared/scripts/ralph-loop.sh" "$shared/scripts/ralph-notify.py" \
+    "$shared/scripts/ralph-state.py" "$shared/scripts/ralph_runtime.py" \
+    "$shared/scripts/ralph_models.py" "$stage/scripts/"
+  cp -p "$shared/assets/worker-protocol.md" "$shared/assets/policy-review.schema.json" "$stage/assets/"
+}
+
+validate_agent_skill_target() {
+  local skills_dir="$1"
+  local skill_name="$2"
+  local target="$skills_dir/$skill_name"
+  if [[ -L "$skills_dir" ]]; then
+    echo "error: refusing to use symlinked skills directory: $skills_dir" >&2
+    exit 1
+  fi
+  [[ -e "$target" || -L "$target" ]] || return 0
+  [[ ! -L "$target" && -f "$target/$MANAGED_MARKER" ]] && return 0
+  echo "error: refusing to overwrite an unmanaged skill: $target" >&2
+  exit 1
+}
+
+install_agent_ralph_skill() {
+  local agent="$1" skill_name="$2" skills_dir="$3" command_name="$4"
+  local stage
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "+ install skill $skill_name -> $skills_dir/$skill_name"
+    return
+  fi
+  stage="$(mktemp -d)"
+  stage_agent_ralph_skill "$agent" "$stage/$skill_name"
+  mkdir -p "$skills_dir"
+  install_skill "$stage/$skill_name" "$skill_name" "$skills_dir"
+  rm -r -- "$stage"
+  python3 "$skills_dir/$skill_name/scripts/ralph_runtime.py" \
+    --record "$skills_dir/$skill_name/scripts/$agent-runtime.json" "--$agent" "$(type -P "$command_name")"
+}
+
+preflight_cursor_environment() {
+  [[ "$DRY_RUN" -eq 0 ]] || return 0
+  if [[ "$(realpath -m "$CODEX_DIR")" != "$(realpath -m "$HOME/.codex")" ]]; then
+    echo "error: Cursor loads Codex skills only from ~/.codex/skills; CODEX_HOME=$CODEX_DIR is not supported" >&2
+    exit 1
+  fi
+  validate_agent_skill_target "$HOME/.cursor/skills" ralph-run-cursor
+  local guidance
+  guidance="$(mktemp)"
+  compose_guidance cursor "$guidance"
+  python3 "$SCRIPT_DIR/scripts/install-cursor.py" --cursor-dir "$HOME/.cursor" \
+    --hook-source-dir "$SCRIPT_DIR/hooks" --guidance-file "$guidance" \
+    --rtk-version "$RTK_VERSION" --check-only
+  rm -f "$guidance"
+}
+
+install_cursor_environment() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "+ register Cursor hooks, guidance and Chrome MCP servers -> $HOME/.cursor"
+    install_agent_ralph_skill cursor ralph-run-cursor "$HOME/.cursor/skills" agent
+    return
+  fi
+  local guidance
+  guidance="$(mktemp)"
+  compose_guidance cursor "$guidance"
+  python3 "$SCRIPT_DIR/scripts/install-cursor.py" --cursor-dir "$HOME/.cursor" \
+    --hook-source-dir "$SCRIPT_DIR/hooks" --guidance-file "$guidance" --rtk-version "$RTK_VERSION"
+  rm -f "$guidance"
+  log "Installed Cursor hooks, guidance and Chrome MCP servers"
+  install_agent_ralph_skill cursor ralph-run-cursor "$HOME/.cursor/skills" agent
+}
+
+preflight_antigravity_environment() {
+  [[ "$DRY_RUN" -eq 0 ]] || return 0
+  local agents_file="$HOME/.gemini/AGENTS.md"
+  if [[ -L "$agents_file" ]] || [[ -e "$agents_file" && ! -f "$agents_file" ]]; then
+    echo "error: refusing to replace non-regular AGENTS.md: $agents_file" >&2
+    exit 1
+  fi
+  validate_agent_skill_target "$HOME/.gemini/antigravity-cli/skills" ralph-run
+  python3 "$SCRIPT_DIR/scripts/install-antigravity.py" --gemini-dir "$HOME/.gemini" \
+    --codex-skills-dir "$(realpath -m "$SKILLS_DIR")" --hook-source-dir "$SCRIPT_DIR/hooks" \
+    --rtk-version "$RTK_VERSION" --check-only
+}
+
+install_antigravity_environment() {
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    install_guidance_block "$HOME/.gemini/AGENTS.md" /dev/null "Antigravity"
+    echo "+ register Antigravity hooks, skills.json and Chrome MCP servers -> $HOME/.gemini/config"
+    install_agent_ralph_skill antigravity ralph-run "$HOME/.gemini/antigravity-cli/skills" agy
+    return
+  fi
+  local guidance
+  guidance="$(mktemp)"
+  compose_guidance antigravity "$guidance"
+  install_guidance_block "$HOME/.gemini/AGENTS.md" "$guidance" "Antigravity"
+  rm -f "$guidance"
+  python3 "$SCRIPT_DIR/scripts/install-antigravity.py" --gemini-dir "$HOME/.gemini" \
+    --codex-skills-dir "$(realpath -m "$SKILLS_DIR")" --hook-source-dir "$SCRIPT_DIR/hooks" \
+    --rtk-version "$RTK_VERSION"
+  log "Installed Antigravity hooks, skills.json and Chrome MCP servers"
+  install_agent_ralph_skill antigravity ralph-run "$HOME/.gemini/antigravity-cli/skills" agy
+}
+
+setup_cursor() {
+  log "Setting up Cursor CLI"
+  preflight_cursor_environment
+  ensure_cursor_cli
+  install_cursor_environment
+}
+
+setup_antigravity() {
+  log "Setting up Antigravity CLI"
+  preflight_antigravity_environment
+  ensure_antigravity_cli
+  install_antigravity_environment
+}
+
 main() {
   ensure_ubuntu_wsl
   prepare_codex_app_environment
@@ -574,15 +766,24 @@ main() {
   install_agents_guidance
   install_rtk_hook
   install_codex_app_environment
+  setup_cursor
+  setup_antigravity
 
   if [[ "$DRY_RUN" -eq 0 ]]; then
     CODEX_APP_HOME="${CODEX_APP_HOME:-}" bash "$SCRIPT_DIR/doctor.sh" --skip-login
     if ! codex login status >/dev/null 2>&1; then
       printf '\nCodexへのログインが必要です。次を実行してください:\n  codex login --device-auth\n'
     fi
+    if ! cursor_logged_in; then
+      printf '\nCursor CLIへのログインが必要です。次を実行してください:\n  agent login\n'
+    fi
+    if ! antigravity_logged_in; then
+      printf '\nAntigravity CLIへのサインインが必要です。次を実行して、表示される案内に従ってください:\n  agy\n'
+    fi
   fi
 
   printf '\nSetup complete. Restart Codex CLI and Codex App, then open /hooks in each and trust the reviewed RTK Safe Hook.\n'
+  printf 'Cursor CLI and Antigravity CLI load their new hooks, guidance and skills when they next start.\n'
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

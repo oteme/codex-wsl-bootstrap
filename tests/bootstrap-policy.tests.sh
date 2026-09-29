@@ -11,6 +11,10 @@ legacy_bin="$TEST_ROOT/legacy-bin"
 mkdir -p "$legacy_bin"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "codex-cli 0.0.0-test\\n"' > "$legacy_bin/codex"
 chmod 0755 "$legacy_bin/codex"
+# The dry run must not depend on the Cursor or Antigravity CLI installed on this machine.
+printf '%s\n' '#!/usr/bin/env bash' 'printf "2026.09.28-64d2043\\n"' > "$legacy_bin/agent"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "1.2.13\\n"' > "$legacy_bin/agy"
+chmod 0755 "$legacy_bin/agent" "$legacy_bin/agy"
 git -C "$legacy_home/gstack" init -q
 git -C "$legacy_home/gstack" remote add origin https://github.com/garrytan/gstack.git
 printf 'generated name patch\n' > "$legacy_home/gstack/SKILL.md"
@@ -32,6 +36,16 @@ grep -Fq "install skill orca-cli -> $legacy_home/.codex/skills/orca-cli" \
   <<< "$gstack_dry_run_output"
 grep -Fq "install skill computer-use -> $legacy_home/.codex/skills/computer-use" \
   <<< "$gstack_dry_run_output"
+grep -Fq 'Cursor CLI already present: 2026.09.28' <<< "$gstack_dry_run_output"
+grep -Fq "register Cursor hooks, guidance and Chrome MCP servers -> $legacy_home/.cursor" \
+  <<< "$gstack_dry_run_output"
+grep -Fq "install skill ralph-run-cursor -> $legacy_home/.cursor/skills/ralph-run-cursor" \
+  <<< "$gstack_dry_run_output"
+grep -Fq 'Antigravity CLI already present: 1.2.13' <<< "$gstack_dry_run_output"
+grep -Fq "update managed block in $legacy_home/.gemini/AGENTS.md" <<< "$gstack_dry_run_output"
+grep -Fq "install skill ralph-run -> $legacy_home/.gemini/antigravity-cli/skills/ralph-run" \
+  <<< "$gstack_dry_run_output"
+[[ ! -e "$legacy_home/.cursor" && ! -e "$legacy_home/.gemini" ]]
 [[ "$(git -C "$legacy_home/gstack" status --short)" == ' M SKILL.md' ]]
 
 custom_state="$TEST_ROOT/custom-state"
@@ -220,6 +234,67 @@ python3 "$ROOT/scripts/install-codex-rtk-hook.py" \
   --test-source "$ROOT/hooks/test-rtk-codex-safe-hook.sh" \
   --rtk-version 0.46.0
 
+# Doctor also checks Cursor CLI and Antigravity CLI. They are set up in their own home by the real
+# setup functions with fake CLIs, so Doctor never reads this machine's configuration.
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'case "$*" in' \
+  '  --version) printf "%s\\n" "${FAKE_CURSOR_VERSION:-2026.09.28-64d2043}" ;;' \
+  '  *) exit 90 ;;' \
+  'esac' > "$test_bin/agent"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'case "$*" in' \
+  '  --version) printf "%s\\n" "${FAKE_AGY_VERSION:-1.2.13}" ;;' \
+  '  *) exit 90 ;;' \
+  'esac' > "$test_bin/agy"
+chmod 0755 "$test_bin/agent" "$test_bin/agy"
+export HOME="$TEST_ROOT/doctor-user-home"
+mkdir -p "$HOME"
+(
+  export PATH="$test_bin:$PATH" CODEX_HOME="$doctor_home"
+  source "$ROOT/install.sh"
+  install_cursor_environment
+  install_antigravity_environment
+) >/dev/null
+
+PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" CODEX_HOME="$doctor_home" \
+  bash "$ROOT/doctor.sh" --skip-login >/dev/null
+
+# check_doctor_failure EXPECTED [ENV...]: Doctor must exit 1 and report EXPECTED.
+check_doctor_failure() {
+  local expected="$1"
+  local output status
+  shift
+  set +e
+  output="$(env "$@" PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" CODEX_HOME="$doctor_home" \
+    bash "$ROOT/doctor.sh" --skip-login 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 1 ]]
+  grep -Fq -- "$expected" <<< "$output"
+}
+check_doctor_failure 'Antigravity CLI version 1.2.9 is older than the verified minimum 1.2.13' \
+  FAKE_AGY_VERSION=1.2.9
+check_doctor_failure 'Cursor CLI version unrecognized is older than the verified minimum' \
+  FAKE_CURSOR_VERSION=unknown
+cursor_guidance="$HOME/.cursor/hooks/codex-workstation-bootstrap/guidance.md"
+mv "$cursor_guidance" "$cursor_guidance.missing"
+check_doctor_failure 'Cursor guidance hook does not return the shared guidance'
+mv "$cursor_guidance.missing" "$cursor_guidance"
+cp "$HOME/.gemini/config/skills.json" "$TEST_ROOT/skills.json.saved"
+printf '{"entries": []}\n' > "$HOME/.gemini/config/skills.json"
+check_doctor_failure "Antigravity skills.json does not register $doctor_home/skills"
+cp "$TEST_ROOT/skills.json.saved" "$HOME/.gemini/config/skills.json"
+printf '{"model": "has space"}\n' > "$HOME/.cursor/ralph.json"
+check_doctor_failure 'Cursor Ralph model settings are invalid'
+rm "$HOME/.cursor/ralph.json"
+printf '{"review_model": 5}\n' > "$doctor_home/ralph.json"
+check_doctor_failure 'CLI Ralph model settings are invalid'
+rm "$doctor_home/ralph.json"
+mv "$HOME/.cursor/skills/ralph-run-cursor/scripts/cursor-runtime.json" "$TEST_ROOT/cursor-runtime.json"
+check_doctor_failure 'Cursor Ralph runtime record is missing or invalid'
+mv "$TEST_ROOT/cursor-runtime.json" "$HOME/.cursor/skills/ralph-run-cursor/scripts/cursor-runtime.json"
 PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" CODEX_HOME="$doctor_home" \
   bash "$ROOT/doctor.sh" --skip-login >/dev/null
 

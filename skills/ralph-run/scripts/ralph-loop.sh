@@ -1,0 +1,558 @@
+# Shared Ralph loop, sourced by an agent entry point (ralph-run-<agent>.sh) that defines:
+#   RALPH_RUNNER_NAME, RALPH_AGENT_LOG_PREFIX, RALPH_AGENT_EXEC_LABEL, RALPH_WORKER_RESTRICTION,
+#   RALPH_REVIEW_EXTRA (appended to the reviewer prompt; empty adds nothing), SCRIPT_DIR,
+#   ralph_resolve_agent                                   sets the agent executable or exits,
+#   ralph_worker ROOT PROMPT LOG LAST_MESSAGE             leaves the final message in LAST_MESSAGE,
+#   ralph_reviewer WORKTREE PROMPT LOG REVIEW_FILE TREE   leaves {approved, findings} JSON in
+#                                                         REVIEW_FILE for the staged TREE.
+# Each agent call must close the runner lock (fd 9), set RALPH_RUN_ACTIVE=1 and pass
+# WORKER_MODEL_ARGS or REVIEW_MODEL_ARGS, which ralph_resolve_agent sets by calling
+# ralph_resolve_models.
+
+# Sets WORKER_MODEL_ARGS and REVIEW_MODEL_ARGS for this run (see ralph_models.py). Without a Ralph
+# model the arrays stay empty and the agent CLI runs with its own default model.
+ralph_resolve_models() {
+  local agent="$1"
+  local models worker_model review_model
+  models="$(python3 "$SCRIPT_DIR/ralph_models.py" resolve --agent "$agent")"
+  worker_model="$(sed -n 1p <<< "$models")"
+  review_model="$(sed -n 2p <<< "$models")"
+  WORKER_MODEL_ARGS=()
+  REVIEW_MODEL_ARGS=()
+  [[ -z "$worker_model" ]] || WORKER_MODEL_ARGS=(--model "$worker_model")
+  [[ -z "$review_model" ]] || REVIEW_MODEL_ARGS=(--model "$review_model")
+  if [[ -n "$worker_model$review_model" ]]; then
+    echo "Ralph models: worker=${worker_model:-CLI default} reviewer=${review_model:-CLI default}"
+  fi
+}
+
+usage() {
+  cat <<EOF
+Usage: $RALPH_RUNNER_NAME [max-iterations] [ralph-dir]
+
+Defaults:
+  max-iterations: 0, which means twice the number of pending stories (at least 10)
+  ralph-dir:      \$PWD/scripts/ralph
+
+The run ends when every story passes or the iteration budget is used up. An iteration that
+completes no story leaves its work in the working tree and the next iteration continues from it;
+an incomplete or rejected story never stops the run by itself.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ "${RALPH_RUN_ACTIVE:-0}" == "1" ]]; then
+  echo "error: refusing to start a nested Ralph runner" >&2
+  exit 1
+fi
+
+MAX_ITER="${1:-0}"
+RALPH_DIR_INPUT="${2:-"$PWD/scripts/ralph"}"
+
+if ! [[ "$MAX_ITER" =~ ^[0-9]+$ ]]; then
+  echo "error: max-iterations must be a non-negative integer; omit it or use 0 for the default budget" >&2
+  exit 2
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "error: python3 command not found on PATH" >&2
+  exit 127
+fi
+
+ralph_resolve_agent
+
+if [[ ! -d "$RALPH_DIR_INPUT" ]]; then
+  echo "error: Ralph directory not found: $RALPH_DIR_INPUT" >&2
+  echo "Create it first with:" >&2
+  echo "  bash ~/.codex/skills/ralph-bootstrap/scripts/bootstrap-ralph.sh" >&2
+  echo "Then create a PRD with /prd and convert it with /ralph." >&2
+  exit 1
+fi
+
+if command -v realpath >/dev/null 2>&1; then
+  RALPH_DIR="$(realpath "$RALPH_DIR_INPUT")"
+else
+  RALPH_DIR="$(cd "$RALPH_DIR_INPUT" && pwd)"
+fi
+
+if [[ ! -f "$RALPH_DIR/prd.json" || ! -f "$RALPH_DIR/CLAUDE.md" ]]; then
+  echo "error: missing Ralph inputs in $RALPH_DIR" >&2
+  [[ -f "$RALPH_DIR/prd.json" ]] || echo "missing: $RALPH_DIR/prd.json" >&2
+  [[ -f "$RALPH_DIR/CLAUDE.md" ]] || echo "missing: $RALPH_DIR/CLAUDE.md" >&2
+  echo "If CLAUDE.md is missing, run ralph-bootstrap. If prd.json is missing, run /prd then /ralph." >&2
+  exit 1
+fi
+
+PROGRESS_FILE="$RALPH_DIR/progress.txt"
+if [[ ! -f "$PROGRESS_FILE" ]]; then
+  {
+    echo "# Ralph Progress Log"
+    echo "Started: $(date)"
+    echo "---"
+  } > "$PROGRESS_FILE"
+  echo "pre-run: created $PROGRESS_FILE"
+fi
+
+PROJECT_ROOT="$(git -C "$RALPH_DIR" rev-parse --show-toplevel)"
+LOG_DIR="$RALPH_DIR/logs"
+mkdir -p "$LOG_DIR"
+
+review_temp_dir=""
+review_worktree=""
+
+cleanup_review_worktree() {
+  local cleanup_failed=0
+
+  if [[ -z "$review_worktree" && -z "$review_temp_dir" ]]; then
+    return 0
+  fi
+
+  if [[ -n "$review_worktree" ]]; then
+    if git -C "$PROJECT_ROOT" worktree remove --force "$review_worktree"; then
+      review_worktree=""
+    else
+      cleanup_failed=1
+    fi
+  fi
+  if [[ -n "$review_temp_dir" && -d "$review_temp_dir" ]]; then
+    if rmdir "$review_temp_dir"; then
+      review_temp_dir=""
+    else
+      cleanup_failed=1
+    fi
+  fi
+  if ! git -C "$PROJECT_ROOT" worktree prune; then
+    cleanup_failed=1
+  fi
+
+  return "$cleanup_failed"
+}
+
+cleanup_review_worktree_on_exit() {
+  local runner_status=$?
+  trap - EXIT
+  if ! cleanup_review_worktree; then
+    echo "error: could not remove temporary policy review worktree: $review_worktree" >&2
+    [[ "$runner_status" -ne 0 ]] || runner_status=1
+  fi
+  exit "$runner_status"
+}
+
+trap cleanup_review_worktree_on_exit EXIT
+
+case "$RALPH_DIR" in
+  "$PROJECT_ROOT"/*) RALPH_REL="${RALPH_DIR#"$PROJECT_ROOT"/}" ;;
+  *) echo "error: Ralph directory must be inside project root: $RALPH_DIR" >&2; exit 1 ;;
+esac
+
+STATE_TOOL="$SCRIPT_DIR/ralph-state.py"
+REVIEW_SCHEMA="$SCRIPT_DIR/../assets/policy-review.schema.json"
+# The worker protocol ships with this skill so that a plan-time rewrite of the project's
+# CLAUDE.md cannot change when a story passes.
+WORKER_PROTOCOL="$SCRIPT_DIR/../assets/worker-protocol.md"
+
+if ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "error: Ralph runner requires a git worktree: $PROJECT_ROOT" >&2
+  exit 1
+fi
+
+if [[ ! -f "$STATE_TOOL" || ! -f "$REVIEW_SCHEMA" || ! -s "$WORKER_PROTOCOL" ]]; then
+  echo "error: Ralph policy gate files are missing; reinstall the ralph-run skill" >&2
+  [[ -f "$STATE_TOOL" ]] || echo "missing: $STATE_TOOL" >&2
+  [[ -f "$REVIEW_SCHEMA" ]] || echo "missing: $REVIEW_SCHEMA" >&2
+  [[ -s "$WORKER_PROTOCOL" ]] || echo "missing: $WORKER_PROTOCOL" >&2
+  exit 1
+fi
+worker_protocol="$(cat "$WORKER_PROTOCOL")"
+
+# All entrypoints share one repository lock, including direct runner invocations.
+if ! command -v flock >/dev/null 2>&1; then
+  echo "error: flock command not found on PATH" >&2
+  exit 127
+fi
+runner_git_dir="$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir)"
+exec 9> "$runner_git_dir/ralph-run.lock"
+if ! flock -n 9; then
+  echo "error: another Ralph runner is already active in this repository" >&2
+  exit 1
+fi
+
+outside_changes_now() {
+  git -C "$PROJECT_ROOT" status --porcelain=v1 --untracked-files=all | while IFS= read -r line; do
+    path="${line:3}"
+    case "$path" in
+      "$RALPH_REL"/*) ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done
+}
+
+# Uncommitted work never blocks a run. It stays in the working tree, the worker is told about
+# it, and it enters the next approved story commit together with that story's changes.
+outside_changes="$(outside_changes_now)"
+if [[ -n "$outside_changes" ]]; then
+  echo "pre-run: uncommitted changes present outside scripts/ralph; they stay in the working tree and enter the next approved commit"
+  sed 's/^/  /' <<< "$outside_changes"
+fi
+
+if [[ "$MAX_ITER" -eq 0 ]]; then
+  pending_count="$(python3 "$STATE_TOOL" pending-count "$RALPH_DIR/prd.json")"
+  MAX_ITER=$((pending_count * 2))
+  if [[ "$MAX_ITER" -lt 10 ]]; then
+    MAX_ITER=10
+  fi
+  echo "Ralph iteration budget: $MAX_ITER (twice the $pending_count pending stories, at least 10)"
+fi
+
+completed=0
+iterations_run=0
+
+for ((i = 1; i <= MAX_ITER; i++)); do
+  iterations_run="$i"
+  log_file="$LOG_DIR/${RALPH_AGENT_LOG_PREFIX}-iteration-$i.log"
+  last_message="$LOG_DIR/${RALPH_AGENT_LOG_PREFIX}-iteration-$i-last-message.txt"
+  before_prd="$LOG_DIR/${RALPH_AGENT_LOG_PREFIX}-iteration-$i-prd-before.json"
+  review_file="$LOG_DIR/${RALPH_AGENT_LOG_PREFIX}-iteration-$i-policy-review.json"
+  iteration_head="$(git -C "$PROJECT_ROOT" rev-parse HEAD)"
+
+  cp "$RALPH_DIR/prd.json" "$before_prd"
+
+  echo "Ralph iteration $i of $MAX_ITER"
+
+  expected_story_output="$(python3 "$STATE_TOOL" next-story "$RALPH_DIR/prd.json")"
+  if [[ -z "$expected_story_output" ]]; then
+    completed=1
+    iterations_run=$((i - 1))
+    echo "Ralph found no pending story; all stories already pass"
+    break
+  fi
+  mapfile -t expected_fields <<< "$expected_story_output"
+  EXPECTED_STORY_ID="${expected_fields[0]:-}"
+
+  resume_note=""
+  if [[ -n "$(outside_changes_now)" ]]; then
+    resume_note="The working tree already contains uncommitted changes. Keep them; do not discard or revert them. If they belong to story $EXPECTED_STORY_ID, continue from them."
+  fi
+
+  prompt=$(cat <<EOF
+You are the implementation worker for one Ralph story.
+
+Do the implementation work directly in the project. $RALPH_WORKER_RESTRICTION
+
+The Ralph directory is $RALPH_DIR. It holds prd.json, progress.txt, and CLAUDE.md.
+
+Follow the Ralph worker protocol below; it comes with the runner, not with the project. Read $RALPH_DIR/CLAUDE.md in full as this project's notes, such as its authorized external actions, and follow it where it does not conflict with the protocol. Where CLAUDE.md, the PRD, or prd.json conflicts with the protocol about when to stop or when a story passes, the protocol wins.
+
+$worker_protocol
+
+Complete the selected story in this turn: keep working until its acceptance criteria and checks pass and you have set its passes to true. Do not stop part-way to hand work to a later turn. In prd.json change only the completed story's passes and notes fields; the outer runner keeps only those changes and discards any other edit, including the top-level description. Do not commit and do not claim that the whole run is complete; the outer runner owns review, commit, and completion.
+$resume_note
+EOF
+)
+
+  # Prevent a stale message from an earlier run from being treated as this iteration's result.
+  : > "$last_message"
+
+  set +e
+  ralph_worker "$PROJECT_ROOT" "$prompt" "$log_file" "$last_message"
+  status=$?
+  set -e
+
+  if [[ "$status" -ne 0 ]]; then
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    echo "error: $RALPH_AGENT_EXEC_LABEL failed in iteration $i with status $status" >&2
+    echo "log: $log_file" >&2
+    exit "$status"
+  fi
+
+  if [[ ! -s "$last_message" ]] || ! grep -q '[^[:space:]]' "$last_message"; then
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    echo "error: $RALPH_AGENT_EXEC_LABEL returned no final message in iteration $i" >&2
+    echo "This can indicate an authentication or MCP startup failure." >&2
+    echo "log: $log_file" >&2
+    exit 1
+  fi
+
+  current_head="$(git -C "$PROJECT_ROOT" rev-parse HEAD)"
+  if [[ "$current_head" != "$iteration_head" ]]; then
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    echo "error: worker changed HEAD before policy approval in iteration $i" >&2
+    echo "before: $iteration_head" >&2
+    echo "after:  $current_head" >&2
+    echo "The runner will not rewind commits automatically. Inspect the unapproved commit before continuing." >&2
+    exit 1
+  fi
+
+  # Keep only the story passes/notes changes from the worker's prd.json; every other edit is
+  # discarded with a warning, and the run continues either way.
+  transition_output=""
+  set +e
+  transition_output="$(python3 "$STATE_TOOL" apply-transition "$before_prd" "$RALPH_DIR/prd.json")"
+  transition_status=$?
+  set -e
+
+  if [[ "$transition_status" -eq 3 ]]; then
+    echo "Iteration $i completed no story; its work stays in the working tree for the next iteration (see $PROGRESS_FILE)."
+    continue
+  fi
+
+  if [[ "$transition_status" -ne 0 ]]; then
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    echo "error: could not apply the worker's prd.json changes in iteration $i" >&2
+    echo "prd.json was restored; uncommitted work stays in the working tree. Inspect: $PROGRESS_FILE" >&2
+    exit 1
+  fi
+
+  STORY_IDS=()
+  STORY_TITLES=()
+  while IFS=$'\t' read -r story_id story_title; do
+    [[ -n "$story_id" ]] || continue
+    STORY_IDS+=("$story_id")
+    STORY_TITLES+=("$story_title")
+  done <<< "$transition_output"
+  STORY_ID_LIST=""
+  STORY_TITLE_LIST=""
+  STORY_REVIEW_LIST=""
+  for index in "${!STORY_IDS[@]}"; do
+    [[ -z "$STORY_ID_LIST" ]] || STORY_ID_LIST+=", "
+    STORY_ID_LIST+="${STORY_IDS[$index]}"
+    [[ -z "$STORY_TITLE_LIST" ]] || STORY_TITLE_LIST+="; "
+    STORY_TITLE_LIST+="${STORY_TITLES[$index]}"
+    [[ -z "$STORY_REVIEW_LIST" ]] || STORY_REVIEW_LIST+="; "
+    STORY_REVIEW_LIST+="${STORY_IDS[$index]}: ${STORY_TITLES[$index]}"
+  done
+
+  git -C "$PROJECT_ROOT" add -A
+  git -C "$PROJECT_ROOT" reset --quiet -- "$RALPH_REL/logs"
+
+  pre_commit_hook="$(git -C "$PROJECT_ROOT" rev-parse --git-path hooks/pre-commit)"
+  if [[ -x "$pre_commit_hook" ]]; then
+    set +e
+    (cd "$PROJECT_ROOT" && "$pre_commit_hook") 9>&-
+    hook_status=$?
+    set -e
+    if [[ "$hook_status" -ne 0 ]]; then
+      git -C "$PROJECT_ROOT" reset --quiet
+      python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+        "Pre-commit hook exited with status $hook_status; the story stays incomplete and its work stays in the working tree." \
+        "${STORY_IDS[@]}"
+      echo "pre-commit hook failed in iteration $i with status $hook_status; $STORY_ID_LIST stays incomplete and the work stays in the working tree for the next iteration."
+      continue
+    fi
+    git -C "$PROJECT_ROOT" add -A
+    git -C "$PROJECT_ROOT" reset --quiet -- "$RALPH_REL/logs"
+  fi
+
+  unexpected_untracked="$(
+    git -C "$PROJECT_ROOT" ls-files --others --exclude-standard | while IFS= read -r path; do
+      case "$path" in
+        "$RALPH_REL"/logs/*) ;;
+        *) printf '%s\n' "$path" ;;
+      esac
+    done
+  )"
+  if ! git -C "$PROJECT_ROOT" diff --quiet || [[ -n "$unexpected_untracked" ]]; then
+    git -C "$PROJECT_ROOT" reset --quiet
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Could not create a complete staged snapshot for policy review." "${STORY_IDS[@]}"
+    echo "error: unstaged or untracked changes remain outside Ralph logs" >&2
+    [[ -n "$unexpected_untracked" ]] && printf '%s\n' "$unexpected_untracked" >&2
+    exit 1
+  fi
+
+  review_index_tree="$(git -C "$PROJECT_ROOT" write-tree)"
+
+  if ! review_temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/ralph-review-XXXXXX")"; then
+    git -C "$PROJECT_ROOT" reset --quiet
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Could not allocate an isolated policy review directory; story was not approved." "${STORY_IDS[@]}"
+    echo "error: could not allocate isolated policy review directory in iteration $i" >&2
+    exit 1
+  fi
+  review_worktree="$review_temp_dir/worktree"
+  if ! git -C "$PROJECT_ROOT" worktree add --quiet --detach "$review_worktree" "$iteration_head" \
+    || ! git -C "$review_worktree" read-tree --reset -u "$review_index_tree"; then
+    review_cleanup_failed=0
+    if ! cleanup_review_worktree; then
+      review_cleanup_failed=1
+    fi
+    git -C "$PROJECT_ROOT" reset --quiet
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Could not create an isolated policy review worktree; story was not approved." "${STORY_IDS[@]}"
+    echo "error: could not create isolated policy review worktree in iteration $i" >&2
+    if [[ "$review_cleanup_failed" -eq 1 ]]; then
+      echo "error: temporary policy review path also could not be cleaned: $review_worktree" >&2
+    fi
+    exit 1
+  fi
+
+  review_prompt=$(cat <<EOF
+You are the independent fail-close and clean-break policy reviewer for one Ralph iteration.
+
+This is a static policy diff review. Do not run builds, tests, linters, coverage commands, package
+managers, or any command that creates or modifies files. Judge only the policy violations listed
+below from the staged diff. The implementation worker and pre-commit hook own test execution.
+
+Inspect the complete staged snapshot using "git diff --cached HEAD" in this disposable worktree:
+$review_worktree
+
+The runner already verified that the staged snapshot is complete. Do not use the main worktree or
+plain "git diff HEAD"; every newly created file must be reviewed from the cached diff.
+
+The stories under review are: $STORY_REVIEW_LIST. Read their acceptance criteria only to determine
+whether fallback, compatibility, removal, or test behavior is explicitly required or allowed:
+$review_worktree/$RALPH_REL/prd.json
+
+Ignore bookkeeping-only changes under scripts/ralph. Reject only when the diff contains at least
+one of these concrete problems:
+
+1. A newly introduced fallback, guessed default, broad retry, swallowed error, or no-op that turns
+   a required failure into apparent success without explicit acceptance criteria.
+2. A compatibility shim, dual path, retained legacy implementation, migration behavior, or feature
+   flag that is not explicitly required by acceptance criteria.
+3. Obsolete behavior that acceptance criteria require to be removed but remains reachable.
+4. A skipped, weakened, or deleted valid test used to make checks pass.
+
+Do not review general correctness or completeness. Do not reject for an acceptance criterion that
+is unrelated to the four policy checks above, style, optional refactors, or hypothetical
+improvements. Existing compatibility and fallback behavior outside the story's change is not a
+finding. Every finding must cite specific diff evidence such as a file and symbol or changed
+behavior. Return JSON matching the provided schema. Set approved=true with findings=[] only when no
+listed policy problem is present.
+$RALPH_REVIEW_EXTRA
+EOF
+)
+
+  : > "$review_file"
+  set +e
+  ralph_reviewer "$review_worktree" "$review_prompt" "$log_file" "$review_file" "$review_index_tree"
+  review_status=$?
+  set -e
+
+  if ! cleanup_review_worktree; then
+    git -C "$PROJECT_ROOT" reset --quiet
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Temporary policy review worktree cleanup failed; story was not approved." "${STORY_IDS[@]}"
+    echo "error: could not remove temporary policy review worktree in iteration $i" >&2
+    exit 1
+  fi
+
+  post_review_head="$(git -C "$PROJECT_ROOT" rev-parse HEAD)"
+  post_review_tree="$(git -C "$PROJECT_ROOT" write-tree)"
+  post_review_staged="$(git -C "$PROJECT_ROOT" diff --cached --name-status "$review_index_tree")"
+  post_review_tracked="$(git -C "$PROJECT_ROOT" diff --name-status)"
+  post_review_untracked="$(
+    git -C "$PROJECT_ROOT" ls-files --others --exclude-standard | while IFS= read -r path; do
+      case "$path" in
+        "$RALPH_REL"/logs/*) ;;
+        *) printf '%s\n' "$path" ;;
+      esac
+    done
+  )"
+  if [[ "$post_review_head" != "$iteration_head" \
+    || "$post_review_tree" != "$review_index_tree" \
+    || -n "$post_review_staged" \
+    || -n "$post_review_tracked" \
+    || -n "$post_review_untracked" ]]; then
+    echo "error: repository changed during policy review in iteration $i" >&2
+    echo "review tree: $review_index_tree" >&2
+    if [[ "$post_review_head" != "$iteration_head" ]]; then
+      echo "HEAD moved: expected $iteration_head, found $post_review_head" >&2
+    fi
+    if [[ "$post_review_tree" != "$review_index_tree" ]]; then
+      echo "staged tree changed: expected $review_index_tree, found $post_review_tree" >&2
+    fi
+    if [[ -n "$post_review_staged" ]]; then
+      echo "staged paths changed:" >&2
+      printf '%s\n' "$post_review_staged" >&2
+    fi
+    if [[ -n "$post_review_tracked" ]]; then
+      echo "tracked worktree paths changed:" >&2
+      printf '%s\n' "$post_review_tracked" >&2
+    fi
+    if [[ -n "$post_review_untracked" ]]; then
+      echo "untracked paths appeared:" >&2
+      printf '%s\n' "$post_review_untracked" >&2
+    fi
+    git -C "$PROJECT_ROOT" reset --quiet
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Repository changed after the staged policy snapshot was created." "${STORY_IDS[@]}"
+    exit 1
+  fi
+
+  if [[ "$review_status" -ne 0 ]]; then
+    git -C "$PROJECT_ROOT" reset --quiet
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Policy reviewer exited with status $review_status; story was not approved." "${STORY_IDS[@]}"
+    echo "error: policy review failed in iteration $i with status $review_status" >&2
+    echo "log: $log_file" >&2
+    exit "$review_status"
+  fi
+
+  review_result=""
+  if ! review_result="$(python3 "$STATE_TOOL" review-result "$review_file")"; then
+    git -C "$PROJECT_ROOT" reset --quiet
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Policy reviewer returned invalid structured output; story was not approved." "${STORY_IDS[@]}"
+    echo "error: invalid policy review output in iteration $i" >&2
+    echo "review: $review_file" >&2
+    exit 1
+  fi
+
+  if [[ "$review_result" == "rejected" ]]; then
+    git -C "$PROJECT_ROOT" reset --quiet
+    python3 "$STATE_TOOL" reject \
+      "$RALPH_DIR/prd.json" "$review_file" "$PROGRESS_FILE" "${STORY_IDS[@]}"
+    echo "Policy review rejected $STORY_ID_LIST; the changes stay uncommitted for repair in the next iteration."
+    continue
+  fi
+
+  commit_message="feat: $STORY_ID_LIST - $STORY_TITLE_LIST"
+  branch_ref="$(git -C "$PROJECT_ROOT" symbolic-ref -q HEAD || true)"
+  commit_oid=""
+  if [[ -n "$branch_ref" ]]; then
+    commit_oid="$(
+      printf '%s\n' "$commit_message" \
+        | git -C "$PROJECT_ROOT" commit-tree "$review_index_tree" -p "$iteration_head"
+    )"
+  fi
+  if [[ -z "$branch_ref" || -z "$commit_oid" ]] \
+    || ! git -C "$PROJECT_ROOT" update-ref \
+      -m "commit: $commit_message" "$branch_ref" "$commit_oid" "$iteration_head"; then
+    git -C "$PROJECT_ROOT" reset --quiet
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Exact-tree commit gate failed; story was not committed." "${STORY_IDS[@]}"
+    echo "error: exact-tree commit gate failed in iteration $i" >&2
+    exit 1
+  fi
+
+  if [[ "$(python3 "$STATE_TOOL" all-passed "$RALPH_DIR/prd.json")" == "true" ]]; then
+    completed=1
+    echo "Ralph completed all tasks at iteration $i"
+    break
+  fi
+
+  echo "Iteration $i approved and committed. Continuing..."
+done
+
+if [[ "$completed" -eq 0 ]]; then
+  echo "Ralph used its iteration budget ($MAX_ITER) without completing all stories; uncommitted work stays in the working tree. Run it again to continue."
+fi
+
+echo "completed=$completed"
+echo "iterationsRun=$iterations_run"
+echo "maxIterations=$MAX_ITER"
+echo "progress=$PROGRESS_FILE"
+echo "logs=$LOG_DIR"

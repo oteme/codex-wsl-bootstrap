@@ -13,6 +13,11 @@ set -euo pipefail
 [[ "${1:-}" == hook && "${2:-}" == check ]]
 case "${3:-}" in
   'go test ./...') printf 'rtk go test ./...\n' ;;
+  'npm test' | 'bun test' | 'yarn lint' | 'pnpm test' | 'tail -f app.log' | '  npm test -- --grep "a b"  ')
+    # Like RTK 0.46: no rewrite is reported with the verbatim command on stderr and exit code 1.
+    printf 'No rewrite for: %s\n' "${3:-}" >&2
+    exit 1
+    ;;
   *) printf 'rtk %s\n' "${3:-}" ;;
 esac
 EOF
@@ -81,7 +86,6 @@ for command in \
   'npx vitest run' \
   'cargo test' \
   'git status --short' \
-  'npm test' \
   'ruff check .'; do
   rewrite_output="$(payload "$command" | RTK_BIN="$fake_rtk" python3 "$TEST_ROOT/hook.py")"
   python3 -c '
@@ -96,6 +100,11 @@ assert_empty 'npx prettier --write example.js'
 assert_empty 'git push origin main'
 assert_empty 'go env'
 assert_empty 'unknown-command argument'
+
+# RTK has no rewrite for these allowlisted commands; they must run unchanged, not be denied.
+for command in 'npm test' 'bun test' 'yarn lint' 'pnpm test' 'tail -f app.log' '  npm test -- --grep "a b"  '; do
+  assert_empty "$command"
+done
 
 assert_denied_json '[]' 'JSON object'
 assert_denied_json '{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}' 'unexpected Codex hook event'
@@ -156,6 +165,51 @@ assert data["permissionDecision"] == "deny"
 ' <<< "$special_output"
   fi
 done
+
+fixed_rtk="$TEST_ROOT/fixed-rtk"
+cat > "$fixed_rtk" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' "$FAKE_STDOUT"
+printf '%s' "$FAKE_STDERR" >&2
+exit "$FAKE_STATUS"
+EOF
+chmod 0755 "$fixed_rtk"
+
+# assert_fixed_rtk EXPECTED COMMAND STDOUT STDERR STATUS: only exit 1 with empty stdout and a
+# last stderr line that is the exact report for COMMAND, after nothing but "[rtk] " lines,
+# means "no rewrite"; any other result must be denied.
+assert_fixed_rtk() {
+  local expected="$1"
+  local output
+  output="$(payload "$2" \
+    | FAKE_STDOUT="$3" FAKE_STDERR="$4" FAKE_STATUS="$5" RTK_BIN="$fixed_rtk" python3 "$TEST_ROOT/hook.py")"
+  if [[ "$expected" == passthrough ]]; then
+    [[ -z "$output" ]] || {
+      echo "RTK no-rewrite report was not passed through for $2: $output" >&2
+      exit 1
+    }
+    return
+  fi
+  python3 -c '
+import json, sys
+data = json.load(sys.stdin)["hookSpecificOutput"]
+assert data["permissionDecision"] == "deny"
+assert sys.argv[1] in data["permissionDecisionReason"]
+' "$expected" <<< "$output"
+}
+assert_fixed_rtk passthrough 'go test ./...' '' $'No rewrite for: go test ./...\n' 1
+assert_fixed_rtk 'exit code 1' 'go test ./...' '' $'error: failed to load RTK config\n' 1
+assert_fixed_rtk 'exit code 1' 'go test ./...' $'rtk go test ./...\n' $'No rewrite for: go test ./...\n' 1
+assert_fixed_rtk 'exit code 1' 'go test ./...' '' $'No rewrite for: npm test\n' 1
+assert_fixed_rtk 'exit code 2' 'go test ./...' '' $'No rewrite for: go test ./...\n' 2
+
+# RTK may print its own "[rtk] " diagnostics before the report, such as this real warning.
+rtk_warning='[rtk] /!\ No hook installed — run `rtk init -g` for automatic token savings'
+assert_fixed_rtk passthrough 'npm test' '' "$rtk_warning"$'\nNo rewrite for: npm test\n' 1
+assert_fixed_rtk 'exit code 1' 'npm test' '' $'warning: low disk space\nNo rewrite for: npm test\n' 1
+assert_fixed_rtk 'exit code 1' 'npm test' '' $'No rewrite for: npm test\n'"$rtk_warning"$'\n' 1
+assert_fixed_rtk 'exit code 1' 'npm test' '' "$rtk_warning"$'\nNo rewrite for: go test ./...\n' 1
+assert_fixed_rtk 'exit code 1' 'npm test' '' "$rtk_warning"$'\n' 1
 
 codex_dir="$TEST_ROOT/codex home"
 mkdir -p "$codex_dir"

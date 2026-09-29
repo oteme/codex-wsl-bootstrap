@@ -132,6 +132,16 @@ def rewrite(command: str) -> tuple[str | None, str | None]:
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         return None, f"RTK Safe Hook failed to inspect the command: {type(error).__name__}."
+    # RTK 0.46 reports a command without a rewrite as the last stderr line with exit code 1,
+    # possibly after its own "[rtk] " diagnostics such as the missing-hook warning.
+    *diagnostics, report = result.stderr.removesuffix("\n").split("\n")
+    if (
+        result.returncode == 1
+        and not result.stdout.strip()
+        and report == f"No rewrite for: {command}"
+        and all(line.startswith("[rtk] ") for line in diagnostics)
+    ):
+        return "", None
     if result.returncode != 0:
         return None, f"RTK Safe Hook received RTK exit code {result.returncode}."
 

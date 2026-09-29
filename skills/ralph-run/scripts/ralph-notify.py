@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Run Ralph without model polling; queue one terminal result to the initiating thread."""
+"""Run Ralph without model polling; deliver one terminal result to the initiating conversation.
+
+Codex queues the result to its thread with `codex queue`. Cursor and Antigravity have no queue, so
+the result is delivered by one headless turn resumed in the initiating conversation, and delivery
+counts only when the CLI reports that same conversation back (both CLIs silently start a new
+conversation for an unknown ID).
+"""
 import argparse
 import fcntl
 import json
@@ -12,7 +18,17 @@ import subprocess
 import sys
 import uuid
 
-from ralph_runtime import load as load_codex
+from ralph_models import resolve as resolve_models
+from ralph_runtime import AGENTS, load_agent
+
+HERE = Path(__file__).resolve().parent
+RUNNERS = {'codex': 'ralph-run-codex.sh', 'cursor': 'ralph-run-cursor.sh',
+           'antigravity': 'ralph-run-antigravity.sh'}
+# The option each CLI must offer before a run starts, so a finished run can report back.
+REQUIRED_OPTION = {'cursor': b'--resume', 'antigravity': b'--conversation'}
+DELIVERY_TIMEOUT = 600
+# How each CLI lists the model names it accepts; Codex has no such command.
+MODEL_LIST = {'cursor': re.compile(r'^(\S+) - '), 'antigravity': re.compile(r'^(\S+)\t')}
 
 
 def save(path, value):
@@ -56,10 +72,66 @@ def outcome(log, code):
     return 'failed', None
 
 
+def check_models(agent, executable, models):
+    """Refuse to start with a model the Cursor or Antigravity CLI does not list."""
+    if agent not in MODEL_LIST or not any(models):
+        return
+    listing = subprocess.run([executable, 'models'], stdin=subprocess.DEVNULL, capture_output=True,
+                             text=True, timeout=60)
+    if listing.returncode != 0:
+        raise ValueError(f'{AGENTS[agent]} could not list its models (exit {listing.returncode})')
+    offered = {match.group(1) for line in listing.stdout.splitlines()
+               if (match := MODEL_LIST[agent].match(line))}
+    for model in dict.fromkeys(model for model in models if model):
+        if model not in offered:
+            raise ValueError(f'{AGENTS[agent]} does not offer the model {model!r}; '
+                             f'run `{Path(executable).name} models` for the list')
+
+
+def deliver(state, message, log):
+    """Resume the initiating Cursor or Antigravity conversation once with the result."""
+    agent, conversation = state['agent'], state['conversation']
+    if agent == 'cursor':
+        command = [state['executable'], '-p', f'--resume={conversation}', '--trust',
+                   '--workspace', state['project_root'], '--output-format', 'json', message]
+    else:
+        command = [state['executable'], '--conversation', conversation,
+                   '--output-format', 'json', '-p', message]
+    env = dict(os.environ, RALPH_RUN_ACTIVE='1')
+    result = subprocess.run(command, cwd=state['project_root'], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=log, env=env, timeout=DELIVERY_TIMEOUT)
+    log.write(result.stdout)
+    state['notification_exit_code'] = result.returncode
+    if result.returncode != 0:
+        state['notification_error'] = f'{AGENTS[agent]} exited with status {result.returncode}'
+        return 'failed'
+    try:
+        reply = json.loads(result.stdout)
+    except ValueError:
+        state['notification_error'] = f'{AGENTS[agent]} returned invalid JSON'
+        return 'failed'
+    if not isinstance(reply, dict):
+        state['notification_error'] = f'{AGENTS[agent]} returned a non-object reply'
+        return 'failed'
+    if agent == 'cursor':
+        replied = reply.get('session_id')
+        succeeded = reply.get('subtype') == 'success' and reply.get('is_error') is False
+    else:
+        replied = reply.get('conversation_id')
+        succeeded = reply.get('status') == 'SUCCESS'
+    if replied != conversation:
+        state['notification_error'] = f'the result went to conversation {replied!r}, not the initiating one'
+        return 'failed'
+    if not succeeded:
+        state['notification_error'] = f'{AGENTS[agent]} did not finish the result turn successfully'
+        return 'failed'
+    return 'delivered'
+
+
 def supervise(run_dir, lock_fd, ready_fd):
     state_path = run_dir / 'result.json'
     state = json.loads(state_path.read_text())
-    runner = Path(__file__).with_name('ralph-run-codex.sh')
+    runner = Path(__file__).with_name(RUNNERS[state.get('agent', 'codex')])
     child = None
     interrupted = False
 
@@ -71,12 +143,17 @@ def supervise(run_dir, lock_fd, ready_fd):
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    env = dict(os.environ)
+    # The runner resolves the same models again; passing them keeps the checked models in use.
+    for key, variable in (('worker_model', 'RALPH_MODEL'), ('review_model', 'RALPH_REVIEW_MODEL')):
+        if state.get(key):
+            env[variable] = state[key]
     try:
         with (run_dir / 'runner.log').open('wb') as log:
             child = subprocess.Popen(['bash', str(runner), str(state['max_iterations']),
                                       state['ralph_dir']], cwd=state['project_root'],
                                      stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                                     start_new_session=True)
+                                     start_new_session=True, env=env)
             state.update(status='running', runner_pid=child.pid, supervisor_pid=os.getpid(),
                          supervisor_identity=identity(os.getpid()))
             save(state_path, state)
@@ -107,22 +184,28 @@ def supervise(run_dir, lock_fd, ready_fd):
                'Read detailed logs only if needed to explain a failure.')
     try:
         with (run_dir / 'notification.log').open('wb') as log:
-            result = subprocess.run([state['codex'], 'queue', '--thread', state['thread'],
-                                     '--message', message], stdin=subprocess.DEVNULL,
-                                    stdout=log, stderr=log, timeout=30)
-        state['notification'] = 'queued' if result.returncode == 0 else 'failed'
-        state['notification_exit_code'] = result.returncode
+            if 'agent' in state:
+                state['notification'] = deliver(state, message, log)
+            else:
+                result = subprocess.run([state['codex'], 'queue', '--thread', state['thread'],
+                                         '--message', message], stdin=subprocess.DEVNULL,
+                                        stdout=log, stderr=log, timeout=30)
+                state['notification'] = 'queued' if result.returncode == 0 else 'failed'
+                state['notification_exit_code'] = result.returncode
     except Exception as exc:
         state.update(notification='failed', notification_error=str(exc))
     save(state_path, state)
     os.close(lock_fd)
-    return 0 if state['notification'] == 'queued' else 1
+    return 0 if state['notification'] in ('queued', 'delivered') else 1
 
 
-def start(args):
+def start(args, agent):
     if os.environ.get('RALPH_RUN_ACTIVE') == '1':
         raise ValueError('refusing to start a nested Ralph runner')
-    thread = str(uuid.UUID(args.thread))
+    if agent == 'codex':
+        conversation = str(uuid.UUID(args.thread))
+    else:
+        conversation = str(uuid.UUID(args.conversation))
     if args.max_iterations < 0:
         raise ValueError('max iterations must be non-negative')
     ralph = Path(args.ralph_dir).resolve(strict=True)
@@ -131,10 +214,20 @@ def start(args):
             raise ValueError('missing Ralph input: ' + str(ralph / name))
     project = subprocess.check_output(['git', '-C', str(ralph), 'rev-parse', '--show-toplevel'],
                                       text=True).strip()
-    codex = load_codex()
-    check = subprocess.run([codex, 'queue', '--help'], capture_output=True, timeout=10)
-    if check.returncode != 0 or b'--thread' not in check.stdout:
-        raise ValueError('this Codex does not support queue --thread; refusing to start')
+    recorded_agent, executable = load_agent()
+    if recorded_agent != agent:
+        raise ValueError(f'this Ralph skill is configured for {AGENTS[recorded_agent]}')
+    if agent == 'codex':
+        check = subprocess.run([executable, 'queue', '--help'], capture_output=True, timeout=10)
+        if check.returncode != 0 or b'--thread' not in check.stdout:
+            raise ValueError('this Codex does not support queue --thread; refusing to start')
+    else:
+        check = subprocess.run([executable, '--help'], capture_output=True, timeout=10)
+        if check.returncode != 0 or REQUIRED_OPTION[agent] not in check.stdout + check.stderr:
+            option = REQUIRED_OPTION[agent].decode()
+            raise ValueError(f'this {AGENTS[agent]} CLI does not support {option}; refusing to start')
+    worker_model, review_model = resolve_models(agent, args.model, args.review_model)
+    check_models(agent, executable, (worker_model, review_model))
     logs = ralph / 'logs'
     logs.mkdir(exist_ok=True)
     lock = (logs / 'notify.lock').open('a')
@@ -145,10 +238,18 @@ def start(args):
     run_id = str(uuid.uuid4())
     run_dir = logs / 'runs' / run_id
     run_dir.mkdir(parents=True)
-    state = dict(run_id=run_id, thread=thread, ralph_dir=str(ralph),
-                 project_root=project, max_iterations=args.max_iterations,
-                 codex=codex, status='starting', notification='not_sent',
-                 progress=str(ralph / 'progress.txt'), log=str(run_dir / 'runner.log'))
+    if agent == 'codex':
+        state = dict(run_id=run_id, thread=conversation, ralph_dir=str(ralph),
+                     project_root=project, max_iterations=args.max_iterations,
+                     codex=executable, status='starting', notification='not_sent',
+                     progress=str(ralph / 'progress.txt'), log=str(run_dir / 'runner.log'))
+    else:
+        state = dict(run_id=run_id, agent=agent, conversation=conversation, ralph_dir=str(ralph),
+                     project_root=project, max_iterations=args.max_iterations,
+                     executable=executable, status='starting', notification='not_sent',
+                     progress=str(ralph / 'progress.txt'), log=str(run_dir / 'runner.log'))
+    if worker_model or review_model:
+        state.update(worker_model=worker_model, review_model=review_model)
     save(run_dir / 'result.json', state)
     read_fd, write_fd = os.pipe()
     with (run_dir / 'supervisor.log').open('wb') as log:
@@ -170,19 +271,38 @@ def start(args):
                           supervisor_pid=supervisor.pid), ensure_ascii=False))
 
 
+def installed_agent():
+    """The agent named by this skill's single runtime record, or None when it is missing or
+    ambiguous (start() then reports the record problem)."""
+    present = [agent for agent in AGENTS if (HERE / f'{agent}-runtime.json').exists()]
+    return present[0] if len(present) == 1 else None
+
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == '_supervise':
         return supervise(Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]))
     if len(sys.argv) == 3 and sys.argv[1] == '--status':
         print(json.dumps(status(Path(sys.argv[2])), ensure_ascii=False))
         return 0
+    agent = installed_agent()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--thread', required=True, help='initiating Codex thread UUID')
+    if agent in ('codex', None):
+        parser.add_argument('--thread', required=agent == 'codex',
+                            help='initiating Codex thread UUID')
+    if agent in ('cursor', 'antigravity', None):
+        parser.add_argument('--conversation', required=agent is not None,
+                            help='initiating Cursor or Antigravity conversation UUID')
     parser.add_argument('--ralph-dir', default=str(Path.cwd() / 'scripts/ralph'))
     parser.add_argument('--max-iterations', type=int, default=0)
+    parser.add_argument('--model', help='worker model for this run (default: saved Ralph model, '
+                                        'then the CLI default)')
+    parser.add_argument('--review-model', help='policy reviewer model for this run (default: saved '
+                                               'Ralph review model, then the worker model)')
     args = parser.parse_args()
     try:
-        start(args)
+        if agent is None:
+            load_agent()  # Reports the missing or ambiguous runtime record.
+        start(args, agent)
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
         print('error: ' + str(exc), file=sys.stderr)
         return 1
