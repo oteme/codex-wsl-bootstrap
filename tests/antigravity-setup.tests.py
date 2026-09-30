@@ -46,6 +46,12 @@ def skills_entry(skills):
     return {"path": str(skills), "exclude": ["ralph-run"]}
 
 
+def agent_entry(gemini):
+    # Antigravity's own skills directory, listed first so that its skills keep their place in the
+    # model's skill budget.
+    return {"path": str(gemini / "antigravity-cli" / "skills")}
+
+
 def mode(path):
     return stat.S_IMODE(path.stat().st_mode)
 
@@ -130,16 +136,18 @@ class AntigravityInstallTests(unittest.TestCase):
         managed = self.gemini / MANAGED
         config = self.gemini / "config"
         self.assertEqual(sorted(path.name for path in managed.iterdir()),
-                         sorted([*SOURCES, "skills-entry.json", MARKER]))
+                         sorted([*SOURCES, "skills-entry.json", "antigravity-skills-entry.json", MARKER]))
         for name, source in SOURCES.items():
             self.assertEqual((managed / name).read_bytes(), (self.source / source).read_bytes())
             self.assertEqual(mode(managed / name), 0o755)
         self.assertEqual((managed / "skills-entry.json").read_text(), json.dumps(skills_entry(self.skills), indent=2) + "\n")
-        for name in ["skills-entry.json", MARKER]:
+        self.assertEqual((managed / "antigravity-skills-entry.json").read_text(),
+                         json.dumps(agent_entry(self.gemini), indent=2) + "\n")
+        for name in ["skills-entry.json", "antigravity-skills-entry.json", MARKER]:
             self.assertEqual(mode(managed / name), 0o644)
         expected = {
             "hooks.json": {HOOK_NAME: managed_hook(managed)},
-            "skills.json": {"entries": [skills_entry(self.skills)]},
+            "skills.json": {"entries": [agent_entry(self.gemini), skills_entry(self.skills)]},
             "mcp_config.json": {"mcpServers": SERVERS},
         }
         for name, data in expected.items():
@@ -164,7 +172,8 @@ class AntigravityInstallTests(unittest.TestCase):
         self.assertEqual(hooks, {**ORCA, "user-audit": audit, HOOK_NAME: managed_hook(self.gemini / MANAGED)})
         skills = read(config / "skills.json")
         self.assertEqual(list(skills), ["inherits", "entries", "extra"])
-        self.assertEqual(skills, {"inherits": ["/opt/base"], "entries": [TEAM_ENTRY, other_entry, skills_entry(self.skills)],
+        self.assertEqual(skills, {"inherits": ["/opt/base"],
+                                  "entries": [agent_entry(self.gemini), TEAM_ENTRY, other_entry, skills_entry(self.skills)],
                                   "extra": {"k": 1.5}})
         mcp = read(config / "mcp_config.json")
         self.assertEqual(mcp, {"mcpServers": {"github": github, **SERVERS}, "extra": True})
@@ -183,7 +192,10 @@ class AntigravityInstallTests(unittest.TestCase):
         })
         recorded = {"path": str(self.skills), "exclude": ["ralph-run", "legacy"]}
         write(managed / "skills-entry.json", recorded)
-        write(config / "skills.json", {"entries": [TEAM_ENTRY, recorded, {"path": "/opt/last"}]})
+        # A previous run recorded Antigravity's own directory elsewhere; it moves to the front.
+        agent_recorded = {"path": "/old home/.gemini/antigravity-cli/skills"}
+        write(managed / "antigravity-skills-entry.json", agent_recorded)
+        write(config / "skills.json", {"entries": [TEAM_ENTRY, recorded, agent_recorded, {"path": "/opt/last"}]})
         write(managed / "rtk-antigravity-safe-hook.py", "tampered\n")
         (managed / "test.sh").chmod(0o600)
         write(self.source / "rtk-codex-safe-hook.py", "print('updated codex hook')\n")
@@ -192,8 +204,10 @@ class AntigravityInstallTests(unittest.TestCase):
         hooks = read(config / "hooks.json")
         self.assertEqual(list(hooks), [HOOK_NAME, "orca-status"])
         self.assertEqual(hooks, {HOOK_NAME: managed_hook(managed), **ORCA})
-        self.assertEqual(read(config / "skills.json"), {"entries": [TEAM_ENTRY, skills_entry(self.skills), {"path": "/opt/last"}]})
+        self.assertEqual(read(config / "skills.json"),
+                         {"entries": [agent_entry(self.gemini), TEAM_ENTRY, skills_entry(self.skills), {"path": "/opt/last"}]})
         self.assertEqual(read(managed / "skills-entry.json"), skills_entry(self.skills))
+        self.assertEqual(read(managed / "antigravity-skills-entry.json"), agent_entry(self.gemini))
         for name, source in SOURCES.items():
             self.assertEqual((managed / name).read_bytes(), (self.source / source).read_bytes())
             self.assertEqual(mode(managed / name), 0o755)
@@ -201,11 +215,23 @@ class AntigravityInstallTests(unittest.TestCase):
     def test_recorded_entry_follows_a_moved_codex_skills_dir(self):
         self.install(self.gemini)
         config = self.gemini / "config"
-        write(config / "skills.json", {"entries": [skills_entry(self.skills), TEAM_ENTRY]})
+        write(config / "skills.json", {"entries": [agent_entry(self.gemini), skills_entry(self.skills), TEAM_ENTRY]})
         moved = self.root / "moved home" / ".codex" / "skills"
         self.install(self.gemini, "--codex-skills-dir", str(moved))
-        self.assertEqual(read(config / "skills.json"), {"entries": [skills_entry(moved), TEAM_ENTRY]})
+        self.assertEqual(read(config / "skills.json"), {"entries": [agent_entry(self.gemini), skills_entry(moved), TEAM_ENTRY]})
         self.assertEqual(read(self.gemini / MANAGED / "skills-entry.json"), skills_entry(moved))
+
+    def test_own_skills_directory_goes_first_once(self):
+        # Setup from before this entry existed: only the Codex entry, after a user entry.
+        config = self.gemini / "config"
+        write(config / "skills.json", {"entries": [TEAM_ENTRY, skills_entry(self.skills)]})
+        self.install(self.gemini)
+        self.assertEqual(read(config / "skills.json"), {"entries": [agent_entry(self.gemini), TEAM_ENTRY, skills_entry(self.skills)]})
+        # The same entry elsewhere, or twice, ends up once, first.
+        write(config / "skills.json", {"entries": [TEAM_ENTRY, agent_entry(self.gemini), skills_entry(self.skills),
+                                                   agent_entry(self.gemini), skills_entry(self.skills)]})
+        self.install(self.gemini)
+        self.assertEqual(read(config / "skills.json"), {"entries": [agent_entry(self.gemini), TEAM_ENTRY, skills_entry(self.skills)]})
 
     def test_empty_mcp_config_created_by_agy_means_no_servers(self):
         config = self.gemini / "config"
@@ -286,9 +312,15 @@ class AntigravityInstallTests(unittest.TestCase):
         def unmarked_managed_dir(gemini):
             write(gemini / MANAGED / "user.txt", "mine\n")
 
-        def invalid_record(gemini):
-            write(gemini / MANAGED / MARKER, "managed by codex-workstation-bootstrap\n")
-            write(gemini / MANAGED / "skills-entry.json", "{")
+        def invalid_record(name):
+            def setup(gemini):
+                write(gemini / MANAGED / MARKER, "managed by codex-workstation-bootstrap\n")
+                write(gemini / MANAGED / name, "{")
+            return setup
+
+        def own_directory_entry(suffix, **extra):
+            return lambda gemini: write(gemini / "config/skills.json", {
+                "entries": [TEAM_ENTRY, {"path": str(agent_entry(gemini)["path"]) + suffix, **extra}]})
 
         def config_file(gemini):
             shutil.rmtree(gemini / "config")
@@ -303,7 +335,9 @@ class AntigravityInstallTests(unittest.TestCase):
             ("symlinked managed directory", symlinked_dir(MANAGED, True), "refusing to overwrite unmanaged hook directory"),
             ("managed directory without marker", unmarked_managed_dir, "refusing to overwrite unmanaged hook directory"),
             ("config is a file", config_file, "refusing to use non-directory Antigravity config directory"),
-            ("invalid recorded skills entry", invalid_record, "refusing to replace invalid recorded skills entry"),
+            ("invalid recorded skills entry", invalid_record("skills-entry.json"), "refusing to replace invalid recorded skills entry"),
+            ("invalid recorded Antigravity skills entry", invalid_record("antigravity-skills-entry.json"),
+             "refusing to replace invalid recorded Antigravity skills entry"),
             ("invalid hooks JSON", text("hooks.json", "{"), "refusing to replace invalid Antigravity hooks file"),
             ("empty hooks JSON", text("hooks.json", ""), "refusing to replace invalid Antigravity hooks file"),
             ("empty skills JSON", text("skills.json", ""), "refusing to replace invalid Antigravity skills file"),
@@ -334,6 +368,10 @@ class AntigravityInstallTests(unittest.TestCase):
             ("foreign entry with the same path and a trailing slash",
              text("skills.json", {"entries": [{"path": f"{self.skills}/", "exclude": ["ralph-run"]}]}),
              f"refusing to replace skills entry for {self.skills} that this bootstrap does not manage"),
+            ("foreign entry for Antigravity's own skills", own_directory_entry("", include_only=["lint"]),
+             "antigravity-cli/skills that this bootstrap does not manage"),
+            ("foreign entry for Antigravity's own skills with a trailing slash", own_directory_entry("/"),
+             "antigravity-cli/skills that this bootstrap does not manage"),
         ]
         for index, (name, setup, message) in enumerate(cases):
             with self.subTest(name):

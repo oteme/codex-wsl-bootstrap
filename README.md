@@ -243,7 +243,7 @@ Antigravity reads no other tool's configuration, so everything is registered exp
 | What | Where |
 | --- | --- |
 | Shared guidance | A managed block in `~/.gemini/AGENTS.md` (Gemini CLI reads `GEMINI.md`, so it is unaffected). |
-| Skills | `~/.codex/skills` registered in `~/.gemini/config/skills.json` with `"exclude": ["ralph-run"]`. `exclude` matches exact folder names. Antigravity lists skills by their frontmatter names, so gstack skills appear without the `gstack-` prefix. |
+| Skills | `~/.gemini/config/skills.json` lists Antigravity's own `~/.gemini/antigravity-cli/skills` (with its `ralph-run`) first, then `~/.codex/skills` with `"exclude": ["ralph-run"]`. Antigravity shows the model only as many skill descriptions as its budget allows; with the Codex skills registered, the skills in its own directory were left out until that directory was listed first. Skills in `~/.gemini/skills` and some built-in skills can still be left out. `exclude` matches exact folder names. Antigravity lists skills by their frontmatter names, so gstack skills appear without the `gstack-` prefix. |
 | RTK Safe Hook | A `PreToolUse` adapter for `run_command` named `codex-workstation-bootstrap-rtk` in `~/.gemini/config/hooks.json`. It answers `{"decision":"ask"}` and rewrites through `overwrite.CommandLine`. agy blocks the command whenever a hook fails. |
 | Chrome DevTools MCP | `chrome-devtools` (9222) and `chrome-devtools-9223` in `~/.gemini/config/mcp_config.json`. The 0-byte file agy creates on first run means no servers; any other file that is not plain JSON (agy also accepts comments) is refused. |
 | Ralph | `ralph-run` in `~/.gemini/antigravity-cli/skills`. |
@@ -327,7 +327,8 @@ CODEX_APP_HOME=/mnt/c/Users/<user>/.codex ./doctor.sh
 
 Then restart Codex CLI and Codex App so they reload the installed skills. Open `/hooks` in each
 and trust the reviewed RTK Safe Hook definition; the bootstrap intentionally does not bypass
-Codex hook trust.
+Codex hook trust. Codex trusts the hook definition in `hooks.json`, so an update that changes only
+the hook script does not ask again.
 
 ## Update an existing device
 

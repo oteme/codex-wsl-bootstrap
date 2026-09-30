@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.7.1.0] - 2026-09-30
+
+### Fixed
+
+- Antigravity did not show the model its own `ralph-run`. Antigravity passes the model only as many skill names and descriptions as its budget allows, and once setup registered about 60 Codex skills in `~/.gemini/config/skills.json`, the skills in `~/.gemini/antigravity-cli/skills` no longer fit: `/skills` listed `ralph-run`, but the agent did not know it. Setup now lists that directory first in `skills.json`, Doctor checks that it comes first, and the Antigravity guidance names the skill's `SKILL.md` in case it is still left out. Skills in `~/.gemini/skills` and two built-in skills (`automation`, `migrate-workflows`) can still be left out.
+- The 0.7.0.0 notes said Codex CLI and Codex App ask again in `/hooks` because the RTK hook file changed. Codex trusts the hook definition in `hooks.json`, which setup did not change, so the updated hook ran without a new prompt.
+
 ## [0.7.0.0] - 2026-09-29
 
 ### Added
@@ -31,7 +38,7 @@ All notable changes to this project are documented in this file.
 
 ### Unchanged
 
-- Codex behavior apart from the RTK fixes, the `AGENTS.md` changes, the Doctor checks, the `CODEX_HOME` requirement and the supervisor's stop handling above and the optional Ralph models; without a `ralph.json` or a run model, Codex runs exactly as before. `config/AGENTS.global.md` and `scripts/install-codex-rtk-hook.py` are unchanged, and the Codex completion scenarios produce the same prompts, output, exit codes, log names and progress entries as before. Because the RTK hook file changes, Codex CLI and Codex App ask once in `/hooks` to trust it again.
+- Codex behavior apart from the RTK fixes, the `AGENTS.md` changes, the Doctor checks, the `CODEX_HOME` requirement and the supervisor's stop handling above and the optional Ralph models; without a `ralph.json` or a run model, Codex runs exactly as before. `config/AGENTS.global.md` and `scripts/install-codex-rtk-hook.py` are unchanged, and the Codex completion scenarios produce the same prompts, output, exit codes, log names and progress entries as before. The RTK hook file changes, but its definition in `hooks.json` does not, so Codex keeps trusting it (corrected in 0.7.1.0).
 - Windows editors (Cursor and Antigravity IDEs) are not configured.
 
 ## [0.6.1.0] - 2026-09-23

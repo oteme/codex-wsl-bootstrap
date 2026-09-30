@@ -338,8 +338,13 @@ mv "$cursor_guidance" "$cursor_guidance.missing"
 check_doctor_failure 'Cursor guidance hook does not return the shared guidance'
 mv "$cursor_guidance.missing" "$cursor_guidance"
 cp "$HOME/.gemini/config/skills.json" "$TEST_ROOT/skills.json.saved"
-printf '{"entries": []}\n' > "$HOME/.gemini/config/skills.json"
-check_doctor_failure "Antigravity skills.json does not register $doctor_home/skills"
+# Antigravity's own skills directory must come first, and the Codex skills must be registered.
+own_skills="{\"path\": \"$HOME/.gemini/antigravity-cli/skills\"}"
+codex_skills="{\"path\": \"$doctor_home/skills\", \"exclude\": [\"ralph-run\"]}"
+for entries in '' "$codex_skills" "$codex_skills, $own_skills" "$own_skills"; do
+  printf '{"entries": [%s]}\n' "$entries" > "$HOME/.gemini/config/skills.json"
+  check_doctor_failure "Antigravity skills.json does not register $HOME/.gemini/antigravity-cli/skills first and $doctor_home/skills"
+done
 cp "$TEST_ROOT/skills.json.saved" "$HOME/.gemini/config/skills.json"
 printf '{"model": "has space"}\n' > "$HOME/.cursor/ralph.json"
 check_doctor_failure 'Cursor Ralph model settings are invalid'
