@@ -223,15 +223,17 @@ check_antigravity_home() {
     --gemini-dir "$gemini_dir" --codex-skills-dir "$(realpath -m "$SKILLS_DIR")" \
     --hook-source-dir "$(dirname "${BASH_SOURCE[0]}")/hooks" --verify
   check_hook_regression "$managed/test.sh" "Antigravity RTK Safe Hook regression"
-  if python3 - "$gemini_dir/config/skills.json" "$(realpath -m "$SKILLS_DIR")" <<'PY'
+  # Antigravity's own skills directory comes first, so its ralph-run keeps a place in the skill
+  # descriptions Antigravity shows the model.
+  if python3 - "$gemini_dir/config/skills.json" "$(realpath -m "$SKILLS_DIR")" "$gemini_dir/antigravity-cli/skills" <<'PY'
 import json, sys
 entries = json.load(open(sys.argv[1])).get("entries", [])
-sys.exit(0 if {"path": sys.argv[2], "exclude": ["ralph-run"]} in entries else 1)
+sys.exit(0 if entries[:1] == [{"path": sys.argv[3]}] and {"path": sys.argv[2], "exclude": ["ralph-run"]} in entries else 1)
 PY
   then
-    pass "Antigravity skills.json registration of $SKILLS_DIR"
+    pass "Antigravity skills.json registration of its own skills first, then $SKILLS_DIR"
   else
-    fail "Antigravity skills.json does not register $SKILLS_DIR"
+    fail "Antigravity skills.json does not register $gemini_dir/antigravity-cli/skills first and $SKILLS_DIR"
   fi
   check_chrome_servers "$gemini_dir/config/mcp_config.json" "Antigravity"
   check_skill ralph-run "$gemini_dir/antigravity-cli/skills" "Antigravity "

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the bootstrap-managed Antigravity CLI hook, Codex skills entry and Chrome MCP servers without replacing user settings."""
+"""Install the bootstrap-managed Antigravity CLI hook, skills entries and Chrome MCP servers without replacing user settings."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ MARKER = ".codex-workstation-bootstrap-managed"
 MANAGED_DIR_NAME = "codex-workstation-bootstrap"
 HOOK_NAME = "codex-workstation-bootstrap-rtk"
 SKILLS_RECORD = "skills-entry.json"
+AGENT_SKILLS_RECORD = "antigravity-skills-entry.json"
 # ralph-run drives Codex workers, so Antigravity must not load the Codex copy.
 EXCLUDED_SKILLS = ["ralph-run"]
 # Managed file name -> file name in --hook-source-dir. All of them are executable.
@@ -181,8 +182,15 @@ def merge_hooks(path: Path, managed_dir: Path) -> dict[str, object]:
 
 
 def merge_skills(
-    path: Path, desired: dict[str, object], recorded: dict[str, object] | None
+    path: Path, managed: list[tuple[dict[str, object], dict[str, object] | None]]
 ) -> dict[str, object]:
+    """Merge the managed entries, each given with the entry recorded by the previous run.
+
+    The first managed entry always goes first: Antigravity shows the model only as many skill
+    descriptions as its budget allows, and the skills in its own directory lost out to the Codex
+    skills until that directory was listed first. Every other managed entry keeps its place, or is
+    appended when it is missing.
+    """
     data = read_json_object(path, "Antigravity skills file")
     if data is None:
         data = {"entries": []}
@@ -195,25 +203,26 @@ def merge_skills(
         raise SystemExit(
             f"error: refusing to replace unsupported Antigravity skills structure in {path}: entries must be objects"
         )
-    target = os.path.normpath(str(desired["path"]))
+    targets = {os.path.normpath(str(desired["path"])): desired for desired, _ in managed}
     merged: list[object] = []
-    placed = False
+    placed: set[int] = set()
     for entry in entries:
         # An entry is ours when it matches this run or the entry recorded by the previous run.
-        owned = entry == desired or (recorded is not None and entry == recorded)
+        owner = next((index for index, (desired, recorded) in enumerate(managed)
+                      if entry == desired or (recorded is not None and entry == recorded)), None)
         entry_path = entry.get("path")
-        if not owned and isinstance(entry_path, str) and os.path.normpath(entry_path) == target:
+        if owner is None and isinstance(entry_path, str) and os.path.normpath(entry_path) in targets:
             raise SystemExit(
-                f"error: refusing to replace skills entry for {desired['path']} that this bootstrap does not manage in {path}"
+                f"error: refusing to replace skills entry for {targets[os.path.normpath(entry_path)]['path']}"
+                f" that this bootstrap does not manage in {path}"
             )
-        if not owned:
+        if owner is None:
             merged.append(entry)
-        elif not placed:
-            merged.append(desired)
-            placed = True
-    if not placed:
-        merged.append(desired)
-    data["entries"] = merged
+        elif owner > 0 and owner not in placed:
+            merged.append(managed[owner][0])
+            placed.add(owner)
+    merged.extend(desired for index, (desired, _) in enumerate(managed) if index > 0 and index not in placed)
+    data["entries"] = [managed[0][0], *merged]
     return data
 
 
@@ -266,7 +275,9 @@ def main() -> int:
     require_directory(config_dir, "Antigravity config directory")
     hooks_dir = config_dir / "hooks"
     managed_dir = hooks_dir / MANAGED_DIR_NAME
-    validate_managed_dir(hooks_dir, managed_dir, [MARKER, SKILLS_RECORD, *contents])
+    validate_managed_dir(hooks_dir, managed_dir, [MARKER, SKILLS_RECORD, AGENT_SKILLS_RECORD, *contents])
+    # Antigravity's own skills, among them its ralph-run, installed by setup.
+    agent_desired: dict[str, object] = {"path": str(args.gemini_dir / "antigravity-cli" / "skills")}
     desired: dict[str, object] = {
         "path": str(args.codex_skills_dir),
         "exclude": list(EXCLUDED_SKILLS),
@@ -278,8 +289,9 @@ def main() -> int:
         verify_hooks(hooks_path, managed_dir)
         return 0
     hooks_data = merge_hooks(hooks_path, managed_dir)
+    agent_recorded = read_json_object(managed_dir / AGENT_SKILLS_RECORD, "recorded Antigravity skills entry")
     recorded = read_json_object(managed_dir / SKILLS_RECORD, "recorded skills entry")
-    skills_data = merge_skills(skills_path, desired, recorded)
+    skills_data = merge_skills(skills_path, [(agent_desired, agent_recorded), (desired, recorded)])
     mcp_data = merge_mcp(mcp_path)
     if args.check_only:
         return 0
@@ -290,7 +302,8 @@ def main() -> int:
         atomic_write(managed_dir / name, content, mode)
     atomic_write(hooks_path, json_bytes(hooks_data), existing_mode(hooks_path))
     atomic_write(skills_path, json_bytes(skills_data), existing_mode(skills_path))
-    # Record the entry only once skills.json holds it, so an interrupted run still owns it.
+    # Record the entries only once skills.json holds them, so an interrupted run still owns them.
+    atomic_write(managed_dir / AGENT_SKILLS_RECORD, json_bytes(agent_desired), 0o644)
     atomic_write(managed_dir / SKILLS_RECORD, json_bytes(desired), 0o644)
     atomic_write(mcp_path, json_bytes(mcp_data), existing_mode(mcp_path))
     return 0
