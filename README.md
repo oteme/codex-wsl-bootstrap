@@ -17,14 +17,26 @@ Recreates this Codex CLI environment on another Ubuntu/WSL2 device:
 - The same instructions and skills in the Windows Codex App when it is installed
 - Fail-close/clean-break rules for the code being built, stated in plans and PRDs and checked by an
   independent Ralph diff review
+- Cursor CLI (`agent`) and Antigravity CLI (`agy`), set up after Codex with the same guidance,
+  skills, Chrome MCP servers, RTK Safe Hook and a Ralph runner of their own (see
+  [Cursor CLI](#cursor-cli) and [Antigravity CLI](#antigravity-cli))
 
 ## RTK Safe Hook
 
 The bootstrap installs a checksum-verified, pinned RTK binary and registers a global Codex
 `PreToolUse` hook. The hook rewrites only allowlisted, single-process commands such as
-`go test ./...`, `git status`, and `npx eslint .`. Shell control syntax, pipes, redirects,
+`go test ./...`, `git status`, and `npx eslint .`. `git diff`, `git show` and `git log` are not
+rewritten: RTK cuts each file's diff to 100 lines and a log to 10 commits without saying so,
+which would hide part of a change or a history from a review.
+Neither are `head` and `tail` (RTK printed a single line for `head -2`) nor commands spaced
+other than with single spaces (RTK misread `head  -n 3`). `grep` and `rg` are rewritten; RTK
+shortens long results but says so and names the file that holds the rest. Shell
+control syntax, pipes, redirects,
 assignments, substitutions, mutating flags, `find`, and unknown commands remain byte-for-byte
-unchanged.
+unchanged. An allowlisted command that RTK has no rewrite for, such as `npm test`, also runs
+unchanged: RTK 0.46 reports it with exit status 1 and `No rewrite for: <command>`, sometimes after
+its own `[rtk]` notice lines. Of RTK's failures, only that exact report counts as "no rewrite";
+any other failure is still denied.
 
 The Codex adapter is separate from RTK's Claude hook. Invalid hook input, a missing or failing
 RTK binary, an unexpected rewrite, and invalid rewritten Bash are denied instead of silently
@@ -193,17 +205,119 @@ of liveness. Inspect the result and logs when recovering. Never start a second r
 notification. Existing PRD formats and policy gates are preserved; the old attached polling
 workflow and worker/reviewer console streaming have been removed.
 
+## Cursor CLI
+
+Setup installs Cursor CLI with the official installer (`https://cursor.com/install`, which does not
+edit shell profiles) when `agent` is missing, and runs `agent update` when it is older than
+`2026.09.28`, the version verified on 2026-09-29. Sign in once per device with `agent login`.
+
+Cursor loads `~/.codex/skills`, `~/.claude/skills` and the Claude Code hooks in
+`~/.claude/settings.json` by itself (Cursor Settings > Agents > Third-Party Imports, on by default;
+`cli-config.json` has no setting for it). The bootstrap therefore copies no skills into Cursor, and it
+refuses a `CODEX_HOME` that does not resolve to `~/.codex`: the whole setup, Codex included, stops
+before it changes any Codex, Cursor or Antigravity setting (only the gstack and Ralph source
+checkouts come first), in a dry run too. The same holds for the other Cursor and Antigravity file
+checks and for an `AGENTS.md` whose managed-block markers do not pair up. On a machine that also
+has Claude Code,
+skills with the same name appear once, and the Claude copy is the one Cursor lists; Cursor names
+skills by their folder, so Codex's gstack skills keep their `gstack-*` names. The Claude Code hooks
+run in Cursor next to the Safe Hook, so a Claude-side RTK hook can still rewrite a command that the
+Safe Hook leaves unchanged.
+
+| What | Where |
+| --- | --- |
+| Shared guidance | A `sessionStart` hook returns it as `additional_context`, because Cursor has no user-level instructions file. The managed copy is `~/.cursor/hooks/codex-workstation-bootstrap/guidance.md`. |
+| RTK Safe Hook | A `preToolUse` adapter for `Shell`, registered with `failClosed`: it returns only `updated_input` for an allowlisted rewrite, `{}` otherwise, and an explicit deny for invalid input. It reuses the Codex hook rules. |
+| Chrome DevTools MCP | `chrome-devtools` (9222) and `chrome-devtools-9223` in `~/.cursor/mcp.json`. Servers there need no per-project approval. |
+| Ralph | `ralph-run-cursor` in `~/.cursor/skills`. In Cursor, a skill named `ralph-run` is Codex's or Claude's. |
+
+## Antigravity CLI
+
+Setup installs Antigravity CLI with the official installer
+(`https://antigravity.google/cli/install.sh --skip-path --skip-aliases`, so shell profiles stay
+untouched) when `agy` is missing, and runs `agy update` when it is older than `1.2.13`. Sign in once
+per device by running `agy` and following the prompt.
+
+Antigravity reads no other tool's configuration, so everything is registered explicitly:
+
+| What | Where |
+| --- | --- |
+| Shared guidance | A managed block in `~/.gemini/AGENTS.md` (Gemini CLI reads `GEMINI.md`, so it is unaffected). |
+| Skills | `~/.codex/skills` registered in `~/.gemini/config/skills.json` with `"exclude": ["ralph-run"]`. `exclude` matches exact folder names. Antigravity lists skills by their frontmatter names, so gstack skills appear without the `gstack-` prefix. |
+| RTK Safe Hook | A `PreToolUse` adapter for `run_command` named `codex-workstation-bootstrap-rtk` in `~/.gemini/config/hooks.json`. It answers `{"decision":"ask"}` and rewrites through `overwrite.CommandLine`. agy blocks the command whenever a hook fails. |
+| Chrome DevTools MCP | `chrome-devtools` (9222) and `chrome-devtools-9223` in `~/.gemini/config/mcp_config.json`. The 0-byte file agy creates on first run means no servers; any other file that is not plain JSON (agy also accepts comments) is refused. |
+| Ralph | `ralph-run` in `~/.gemini/antigravity-cli/skills`. |
+
+Other entries in these files, such as Orca's `orca-status` hook, are preserved.
+
+## Ralph from Cursor and Antigravity
+
+`ralph-run-cursor` and the Antigravity `ralph-run` run the same loop as Codex (`ralph-loop.sh`),
+with the same worker protocol, policy review, exact-tree commit and iteration budget:
+
+- Workers and the reviewer run headless: `agent -p --force --trust --sandbox disabled` and
+  `agy --dangerously-skip-permissions`.
+- The reviewer must report the `git write-tree` of the staged snapshot it reviewed. A review
+  without that exact tree is invalid output, so a reviewer that could not run commands in the
+  review worktree cannot approve. agy constrains the review with `--json-schema`; Cursor has no
+  such option and receives the schema in the prompt. The Cursor reviewer is told to read the diff
+  through `| cat`, because the Claude Code RTK hook that Cursor also runs cuts a plain `git diff`.
+- A Cursor run that does not end with a successful `result` event, and an agy run whose status is
+  not `SUCCESS`, whose `denied_actions` is not empty or whose stderr reports an auto-denied tool,
+  is a hard error. agy exits 0 in these cases.
+- The launcher reads the initiating conversation from `CURSOR_CONVERSATION_ID` or
+  `ANTIGRAVITY_CONVERSATION_ID`. Neither CLI has a message queue, so the supervisor delivers the
+  result by resuming that conversation once with a headless turn that has no automatic approvals,
+  no earlier than a minute after the run started, so that it cannot collide with the turn that
+  started Ralph.
+  `notification=delivered` requires the CLI to report the same conversation back, because both
+  CLIs silently start a new conversation for an unknown ID. A conversation that is open in an
+  interactive session shows the turn after it is reloaded. Cursor resumes the conversation in the
+  project's git top level, so start Cursor there; a session started elsewhere gets
+  `notification=failed`, and the result stays in the result file.
+
+## Ralph models
+
+Each agent's Ralph runs with that CLI's default model unless Ralph has its own. Saved Ralph defaults
+live in a per-agent file that setup never rewrites:
+
+| Agent | Settings file |
+| --- | --- |
+| Codex | `$CODEX_HOME/ralph.json` (normally `~/.codex/ralph.json`; the App home has its own) |
+| Cursor | `~/.cursor/ralph.json` |
+| Antigravity | `~/.gemini/antigravity-cli/ralph.json` |
+
+```json
+{"model": "claude-opus-5-thinking-high", "review_model": "gpt-5.3-codex-high"}
+```
+
+Both keys are optional. Ask for a model when starting a run ("run ralph with <model>"), and the
+skill passes `--model` (workers) or `--review-model` (policy reviewer) to the launcher for that run
+only. Each role uses the run value, then the saved value; the reviewer then falls back to the
+worker's model; with no model anywhere the CLI default is used, exactly as before. Cursor and agy
+check the names against `agent models` and `agy models` before a run starts; Cursor's parameterized
+names such as `claude-opus-4-8[effort=high]` are not listed there, so they are left to Cursor, which
+rejects an invalid one in the first iteration. An empty run model is refused. Codex has no model
+list, so an unknown name fails the first `codex exec`. An invalid settings file stops every run of
+that agent, and Doctor reports it.
+
 ## Verify
 
 ```bash
 ./doctor.sh
 ```
 
-If Codex is not signed in yet:
+If Codex, Cursor CLI or Antigravity CLI is not signed in yet:
 
 ```bash
 codex login --device-auth
+agent login
+agy    # follow the sign-in prompt once
 ```
+
+Doctor also checks Cursor CLI and Antigravity CLI: their versions, hooks, guidance, Chrome MCP
+servers, the Antigravity skills registration and both Ralph runtime records. Without
+`--skip-login` it checks all three sign-ins.
 
 To verify both Codex homes again later, pass the App home to Doctor explicitly:
 
@@ -256,7 +370,7 @@ and checksums in a PR. After merging, apply them with `Downloads/setup-wsl.cmd`.
 ## Security boundary
 
 Authentication files, API keys, browser cookies, shell history, and existing Codex
-session data are never copied. Each device performs its own Codex login.
+session data are never copied. Each device performs its own Codex, Cursor and Antigravity sign-in.
 
 Local `.gstack/` runtime state is excluded by `.gitignore`; do not remove that rule when
 publishing this bundle.

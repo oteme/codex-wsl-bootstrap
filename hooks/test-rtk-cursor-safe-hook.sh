@@ -3,20 +3,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
-HOOK="${HOOK:-$SCRIPT_DIR/rtk-codex-safe-hook.py}"
+HOOK="${HOOK:-$SCRIPT_DIR/rtk-cursor-safe-hook.py}"
 [[ -z "${RTK_BIN:-}" ]] || export RTK_BIN
 
 payload() {
-  python3 -c 'import json,sys; print(json.dumps({"session_id":"test","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":sys.argv[1]},"cwd":"/tmp","permission_mode":"default"}))' "$1"
+  python3 -c 'import json,sys; print(json.dumps({"conversation_id":"test","generation_id":"test","hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":sys.argv[1],"working_directory":"/tmp"}}))' "$1"
 }
 
 simple_output="$(payload 'go test ./...' | python3 "$HOOK")"
 python3 -c '
 import json, sys
-data = json.load(sys.stdin)["hookSpecificOutput"]
-assert data["hookEventName"] == "PreToolUse"
-assert data["permissionDecision"] == "allow"
-assert data["updatedInput"]["command"] == "rtk go test ./..."
+data = json.load(sys.stdin)
+assert data == {"updated_input": {"command": "rtk go test ./...", "working_directory": "/tmp"}}, data
 ' <<< "$simple_output"
 
 for command in \
@@ -42,7 +40,7 @@ for command in \
   'npx eslint --fix example.js' \
   'rm -rf /tmp/not-run'; do
   output="$(payload "$command" | python3 "$HOOK")"
-  [[ -z "$output" ]] || {
+  [[ "$output" == '{}' ]] || {
     echo "unexpected rewrite for: $command" >&2
     exit 1
   }
@@ -50,7 +48,7 @@ done
 
 # RTK has no rewrite for npm test, so the allowlisted command must run unchanged, not be denied.
 no_rewrite_output="$(payload 'npm test' | python3 "$HOOK")"
-[[ -z "$no_rewrite_output" ]] || {
+[[ "$no_rewrite_output" == '{}' ]] || {
   echo "npm test was not passed through unchanged: $no_rewrite_output" >&2
   exit 1
 }
@@ -58,9 +56,9 @@ no_rewrite_output="$(payload 'npm test' | python3 "$HOOK")"
 invalid_output="$(printf '{' | python3 "$HOOK")"
 python3 -c '
 import json, sys
-data = json.load(sys.stdin)["hookSpecificOutput"]
-assert data["permissionDecision"] == "deny"
-assert "invalid JSON" in data["permissionDecisionReason"]
+data = json.load(sys.stdin)
+assert data["permission"] == "deny"
+assert "invalid JSON" in data["user_message"]
 ' <<< "$invalid_output"
 
-printf 'PASS: Codex RTK Safe Hook regression tests.\n'
+printf 'PASS: Cursor RTK Safe Hook regression tests.\n'

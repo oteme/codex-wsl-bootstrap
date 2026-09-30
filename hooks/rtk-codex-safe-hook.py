@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -14,12 +15,16 @@ import sys
 
 MAX_INPUT_BYTES = 1024 * 1024
 COMPLEX_MARKERS = ("\n", "\r", ";", "|", "&", "(", ")", "{", "}", "<", ">", "`", "$(", "${")
-SIMPLE_COMMANDS = {"cat", "df", "du", "grep", "head", "ls", "ps", "rg", "tail"}
+# Not head or tail: RTK printed a single line for `head -2`, and their output is short anyway.
+SIMPLE_COMMANDS = {"cat", "df", "du", "grep", "ls", "ps", "rg"}
 MUTATING_OPTIONS = {"--fix", "--output", "--update", "--update-snapshot", "--write", "-u", "-w"}
 SUBCOMMANDS = {
     "bun": {"lint", "test"},
     "cargo": {"check", "clippy", "test"},
-    "git": {"diff", "log", "show", "status"},
+    # Not diff, show or log: RTK cuts each file's diff to 100 lines and a log to 10 commits without
+    # saying so, which hides part of a change or a history from whoever reads it, including the Ralph
+    # policy reviewer.
+    "git": {"status"},
     "go": {"test"},
     "make": {"check", "lint", "test"},
     "npm": {"test"},
@@ -63,6 +68,10 @@ def parse_input() -> tuple[dict[str, object] | None, str | None]:
 def command_is_allowlisted(command: str) -> bool:
     if any(marker in command for marker in COMPLEX_MARKERS):
         return False
+    # RTK parses the command text itself and misread other spacing: `head  -n 3 file` (two spaces)
+    # became a read of the whole file. Only single-spaced commands are rewritten.
+    if " ".join(command.split()) != command:
+        return False
     try:
         words = shlex.split(command, posix=True)
     except ValueError:
@@ -93,10 +102,14 @@ def command_is_allowlisted(command: str) -> bool:
 
 
 def bash_syntax_ok(command: str) -> bool:
+    # A command line cannot hold a NUL byte; bash would read past it and check something else.
+    if "\x00" in command:
+        return False
     try:
+        # On stdin, not as an argument: an argument longer than 128 KiB fails with E2BIG.
         result = subprocess.run(
-            ["/bin/bash", "-n", "-c", command],
-            stdin=subprocess.DEVNULL,
+            ["/bin/bash", "-n"],
+            input=command.encode("utf-8", "surrogatepass"),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
@@ -130,8 +143,25 @@ def rewrite(command: str) -> tuple[str | None, str | None]:
             check=False,
             timeout=3,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except OSError as error:
+        # RTK takes the command as an argument, which cannot exceed 128 KiB; such a command runs
+        # unchanged, like any command RTK has no rewrite for.
+        if error.errno == errno.E2BIG:
+            return "", None
         return None, f"RTK Safe Hook failed to inspect the command: {type(error).__name__}."
+    except subprocess.TimeoutExpired as error:
+        return None, f"RTK Safe Hook failed to inspect the command: {type(error).__name__}."
+    # RTK 0.46 reports a command without a rewrite as the last stderr line with exit code 1,
+    # possibly after its own "[rtk] " diagnostics such as the missing-hook warning.
+    stderr = result.stderr[:-1] if result.stderr.endswith("\n") else result.stderr
+    *diagnostics, report = stderr.split("\n")
+    if (
+        result.returncode == 1
+        and not result.stdout.strip()
+        and report == f"No rewrite for: {command}"
+        and all(line.startswith("[rtk] ") for line in diagnostics)
+    ):
+        return "", None
     if result.returncode != 0:
         return None, f"RTK Safe Hook received RTK exit code {result.returncode}."
 

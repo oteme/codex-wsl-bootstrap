@@ -11,6 +11,10 @@ legacy_bin="$TEST_ROOT/legacy-bin"
 mkdir -p "$legacy_bin"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "codex-cli 0.0.0-test\\n"' > "$legacy_bin/codex"
 chmod 0755 "$legacy_bin/codex"
+# The dry run must not depend on the Cursor or Antigravity CLI installed on this machine.
+printf '%s\n' '#!/usr/bin/env bash' 'printf "2026.09.28-64d2043\\n"' > "$legacy_bin/agent"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "1.2.13\\n"' > "$legacy_bin/agy"
+chmod 0755 "$legacy_bin/agent" "$legacy_bin/agy"
 git -C "$legacy_home/gstack" init -q
 git -C "$legacy_home/gstack" remote add origin https://github.com/garrytan/gstack.git
 printf 'generated name patch\n' > "$legacy_home/gstack/SKILL.md"
@@ -32,7 +36,65 @@ grep -Fq "install skill orca-cli -> $legacy_home/.codex/skills/orca-cli" \
   <<< "$gstack_dry_run_output"
 grep -Fq "install skill computer-use -> $legacy_home/.codex/skills/computer-use" \
   <<< "$gstack_dry_run_output"
+grep -Fq 'Cursor CLI already present: 2026.09.28' <<< "$gstack_dry_run_output"
+grep -Fq "register Cursor hooks, guidance and Chrome MCP servers -> $legacy_home/.cursor" \
+  <<< "$gstack_dry_run_output"
+grep -Fq "install skill ralph-run-cursor -> $legacy_home/.cursor/skills/ralph-run-cursor" \
+  <<< "$gstack_dry_run_output"
+grep -Fq 'Antigravity CLI already present: 1.2.13' <<< "$gstack_dry_run_output"
+grep -Fq "update managed block in $legacy_home/.gemini/AGENTS.md" <<< "$gstack_dry_run_output"
+grep -Fq "install skill ralph-run -> $legacy_home/.gemini/antigravity-cli/skills/ralph-run" \
+  <<< "$gstack_dry_run_output"
+[[ ! -e "$legacy_home/.cursor" && ! -e "$legacy_home/.gemini" ]]
 [[ "$(git -C "$legacy_home/gstack" status --short)" == ' M SKILL.md' ]]
+
+# A setting that Cursor or Antigravity setup would refuse stops the run before any Codex change,
+# in a dry run too.
+refusal_home="$TEST_ROOT/refusal-home"
+mkdir -p "$refusal_home/.codex" "$refusal_home/.gemini"
+# expect_early_refusal EXPECTED CODEX_HOME: the dry run must exit 1 with EXPECTED before it creates
+# CODEX_HOME or installs anything (only the source checkouts come first, as for the Codex App check).
+expect_early_refusal() {
+  local expected="$1" codex_home="$2" output status
+  set +e
+  output="$(HOME="$refusal_home" CODEX_HOME="$codex_home" PATH="$legacy_bin:$PATH" \
+    bash "$ROOT/install.sh" --dry-run 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 1 ]] || { echo "dry run did not stop for: $expected" >&2; exit 1; }
+  grep -Fq -- "$expected" <<< "$output" || {
+    printf 'dry run did not report: %s\n%s\n' "$expected" "$output" >&2
+    exit 1
+  }
+  if grep -Fq -e "+ mkdir -p $codex_home" -e '+ install skill' -e '+ update managed block' <<< "$output"; then
+    echo "dry run changed Codex before refusing: $expected" >&2
+    exit 1
+  fi
+}
+expect_early_refusal "CODEX_HOME=$TEST_ROOT/other-codex is not supported" "$TEST_ROOT/other-codex"
+ln -s "$TEST_ROOT/elsewhere.md" "$refusal_home/.gemini/AGENTS.md"
+expect_early_refusal 'refusing to replace non-regular AGENTS.md' "$refusal_home/.codex"
+rm "$refusal_home/.gemini/AGENTS.md"
+# The Antigravity and Cursor settings checks run in a dry run too, and so does the check of the
+# Codex AGENTS.md markers.
+mkdir -p "$refusal_home/.gemini/config"
+printf '{broken\n' > "$refusal_home/.gemini/config/mcp_config.json"
+expect_early_refusal \
+  "refusing to replace invalid Antigravity MCP config $refusal_home/.gemini/config/mcp_config.json:" \
+  "$refusal_home/.codex"
+rm -r -- "$refusal_home/.gemini/config"
+mkdir -p "$refusal_home/.cursor"
+printf '{"hooks": {}}\n' > "$refusal_home/.cursor/hooks.json"
+expect_early_refusal \
+  "refusing to replace Cursor hooks file without \"version\": 1: $refusal_home/.cursor/hooks.json" \
+  "$refusal_home/.codex"
+rm -r -- "$refusal_home/.cursor"
+codex_agents="$refusal_home/.codex/AGENTS.md"
+printf '%s\n' 'user notes' '<!-- BEGIN codex-workstation-bootstrap -->' 'old guidance' > "$codex_agents"
+expect_early_refusal \
+  "refusing to update $codex_agents: its codex-workstation-bootstrap BEGIN and END markers do not pair up" \
+  "$refusal_home/.codex"
+rm "$codex_agents"
 
 custom_state="$TEST_ROOT/custom-state"
 custom_gstack="$TEST_ROOT/custom-gstack"
@@ -220,6 +282,142 @@ python3 "$ROOT/scripts/install-codex-rtk-hook.py" \
   --test-source "$ROOT/hooks/test-rtk-codex-safe-hook.sh" \
   --rtk-version 0.46.0
 
+# Doctor also checks Cursor CLI and Antigravity CLI. They are set up in their own home by the real
+# setup functions with fake CLIs, so Doctor never reads this machine's configuration.
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'case "$*" in' \
+  '  --version) printf "%s\\n" "${FAKE_CURSOR_VERSION:-2026.09.28-64d2043}" ;;' \
+  '  *) exit 90 ;;' \
+  'esac' > "$test_bin/agent"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'case "$*" in' \
+  '  --version) printf "%s\\n" "${FAKE_AGY_VERSION:-1.2.13}" ;;' \
+  '  *) exit 90 ;;' \
+  'esac' > "$test_bin/agy"
+chmod 0755 "$test_bin/agent" "$test_bin/agy"
+export HOME="$TEST_ROOT/doctor-user-home"
+mkdir -p "$HOME"
+(
+  export PATH="$test_bin:$PATH" CODEX_HOME="$doctor_home"
+  source "$ROOT/install.sh"
+  install_cursor_environment
+  install_antigravity_environment
+) >/dev/null
+
+PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" CODEX_HOME="$doctor_home" \
+  bash "$ROOT/doctor.sh" --skip-login >/dev/null
+
+# check_doctor_failure EXPECTED [ENV...]: Doctor must exit 1 and report EXPECTED. Its output stays in
+# doctor_failure_output.
+check_doctor_failure() {
+  local expected="$1"
+  local status
+  shift
+  set +e
+  doctor_failure_output="$(env "$@" PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" CODEX_HOME="$doctor_home" \
+    bash "$ROOT/doctor.sh" --skip-login 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 1 ]] || {
+    printf 'Doctor exited %s instead of 1; expected: %s\n%s\n' "$status" "$expected" "$doctor_failure_output" >&2
+    exit 1
+  }
+  grep -Fq -- "$expected" <<< "$doctor_failure_output" || {
+    printf 'Doctor did not report: %s\n%s\n' "$expected" "$doctor_failure_output" >&2
+    exit 1
+  }
+}
+check_doctor_failure 'Antigravity CLI version 1.2.9 is older than the verified minimum 1.2.13' \
+  FAKE_AGY_VERSION=1.2.9
+check_doctor_failure 'Cursor CLI version unrecognized is older than the verified minimum' \
+  FAKE_CURSOR_VERSION=unknown
+cursor_guidance="$HOME/.cursor/hooks/codex-workstation-bootstrap/guidance.md"
+mv "$cursor_guidance" "$cursor_guidance.missing"
+check_doctor_failure 'Cursor guidance hook does not return the shared guidance'
+mv "$cursor_guidance.missing" "$cursor_guidance"
+cp "$HOME/.gemini/config/skills.json" "$TEST_ROOT/skills.json.saved"
+printf '{"entries": []}\n' > "$HOME/.gemini/config/skills.json"
+check_doctor_failure "Antigravity skills.json does not register $doctor_home/skills"
+cp "$TEST_ROOT/skills.json.saved" "$HOME/.gemini/config/skills.json"
+printf '{"model": "has space"}\n' > "$HOME/.cursor/ralph.json"
+check_doctor_failure 'Cursor Ralph model settings are invalid'
+rm "$HOME/.cursor/ralph.json"
+printf '{"review_model": 5}\n' > "$doctor_home/ralph.json"
+check_doctor_failure 'CLI Ralph model settings are invalid'
+rm "$doctor_home/ralph.json"
+# A regression script that cannot run fails Doctor instead of being skipped.
+chmod 0644 "$doctor_home/hooks/rtk-safe/test.sh"
+check_doctor_failure 'CLI Codex RTK Safe Hook regression not executable'
+chmod 0755 "$doctor_home/hooks/rtk-safe/test.sh"
+mv "$HOME/.cursor/skills/ralph-run-cursor/scripts/cursor-runtime.json" "$TEST_ROOT/cursor-runtime.json"
+check_doctor_failure 'Cursor Ralph runtime record is missing or invalid'
+mv "$TEST_ROOT/cursor-runtime.json" "$HOME/.cursor/skills/ralph-run-cursor/scripts/cursor-runtime.json"
+# A removed regression script is reported once, as missing.
+mv "$doctor_home/hooks/rtk-safe/test.sh" "$TEST_ROOT/codex-test.sh"
+check_doctor_failure "CLI Codex RTK Safe Hook regression missing: $doctor_home/hooks/rtk-safe/test.sh"
+[[ "$(grep -c 'Codex RTK Safe Hook regression' <<< "$doctor_failure_output")" -eq 1 ]] || {
+  printf 'Doctor reported the removed regression script more than once:\n%s\n' "$doctor_failure_output" >&2
+  exit 1
+}
+mv "$TEST_ROOT/codex-test.sh" "$doctor_home/hooks/rtk-safe/test.sh"
+# Guidance longer than the 10,000 characters Cursor accepts at session start fails Doctor: the Cursor
+# installer's --verify reports its length. Here the guidance is padded to 10,001 characters.
+cp -p "$cursor_guidance" "$TEST_ROOT/guidance.md.saved"
+python3 - "$cursor_guidance" <<'PY'
+import sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    length = len(source.read().encode("utf-16-le")) // 2
+if length >= 10_000:
+    raise SystemExit(f"error: the composed Cursor guidance is already {length} characters")
+with open(sys.argv[1], "a", encoding="utf-8") as target:
+    target.write("x" * (10_000 - length) + "\n")
+PY
+check_doctor_failure \
+  "Cursor hook registrations: Cursor guidance is 10001 characters; Cursor accepts at most 10000: $cursor_guidance"
+cp -p "$TEST_ROOT/guidance.md.saved" "$cursor_guidance"
+
+# Doctor compares the Chrome MCP servers and the managed hook registrations with what setup writes,
+# instead of only looking for them.
+# check_changed_json EXPECTED FILE STATEMENTS: Doctor reports EXPECTED once the Python STATEMENTS have
+# changed `data`, the JSON in FILE; FILE is restored afterwards.
+check_changed_json() {
+  local expected="$1" file="$2" statements="$3"
+  cp -p "$file" "$TEST_ROOT/changed.json.saved"
+  python3 - "$file" "$statements" <<'PY'
+import json, sys
+path, statements = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as source:
+    data = json.load(source)
+exec(statements)
+with open(path, "w", encoding="utf-8") as target:
+    json.dump(data, target, indent=2)
+PY
+  check_doctor_failure "$expected"
+  cp -p "$TEST_ROOT/changed.json.saved" "$file"
+}
+check_changed_json "Cursor Chrome MCP registrations are missing or different: $HOME/.cursor/mcp.json" \
+  "$HOME/.cursor/mcp.json" \
+  'data["mcpServers"]["chrome-devtools"]["args"][-1] = "--browser-url=http://127.0.0.1:9223"'
+check_changed_json \
+  "Antigravity Chrome MCP registrations are missing or different: $HOME/.gemini/config/mcp_config.json" \
+  "$HOME/.gemini/config/mcp_config.json" \
+  'data["mcpServers"]["chrome-devtools-9223"]["args"][1] = "chrome-devtools-mcp@0.1.0"'
+cursor_hooks_mismatch="Cursor hook registrations: the Cursor hook registration in $HOME/.cursor/hooks.json"
+check_changed_json "$cursor_hooks_mismatch" "$HOME/.cursor/hooks.json" \
+  'data["hooks"]["preToolUse"][0]["failClosed"] = False'
+check_changed_json "$cursor_hooks_mismatch" "$HOME/.cursor/hooks.json" \
+  'data["hooks"]["preToolUse"][0]["matcher"] = "Shell"'
+# Cursor needs "version": 1 in hooks.json; the managed handlers alone do not make the file valid.
+check_changed_json \
+  "Cursor hook registrations: the Cursor hooks file $HOME/.cursor/hooks.json lacks \"version\": 1" \
+  "$HOME/.cursor/hooks.json" 'del data["version"]'
+check_changed_json \
+  "Antigravity hook registrations: the Antigravity hook registration in $HOME/.gemini/config/hooks.json" \
+  "$HOME/.gemini/config/hooks.json" \
+  'data["codex-workstation-bootstrap-rtk"]["PreToolUse"][0]["matcher"] = "view_file"'
+# With every file restored, Doctor passes again.
 PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" CODEX_HOME="$doctor_home" \
   bash "$ROOT/doctor.sh" --skip-login >/dev/null
 

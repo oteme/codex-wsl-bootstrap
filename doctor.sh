@@ -6,6 +6,14 @@ SKILLS_DIR="$CODEX_DIR/skills"
 if ! command -v node >/dev/null || ! command -v npx >/dev/null; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
+# The Cursor and Antigravity installers put agent and agy in ~/.local/bin. Appending keeps any
+# command already on PATH first.
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) export PATH="$PATH:$HOME/.local/bin" ;;
+esac
+# shellcheck source=scripts/agent-cli.sh
+source "$(dirname "${BASH_SOURCE[0]}")/scripts/agent-cli.sh"
 failures=0
 skip_login=0
 check_browser=0
@@ -78,7 +86,6 @@ check_codex_home() {
 
   local rtk_hook_dir="$codex_dir/hooks/rtk-safe"
   check_file "$rtk_hook_dir/rtk-codex-safe-hook.py" "${label}Codex RTK Safe Hook"
-  check_file "$rtk_hook_dir/test.sh" "${label}Codex RTK Safe Hook regression test"
   check_file "$rtk_hook_dir/rtk-version" "${label}Codex RTK pinned version"
   check_text "$codex_dir/hooks.json" 'rtk-codex-safe-hook.py' "${label}Codex RTK PreToolUse registration"
 
@@ -93,15 +100,143 @@ check_codex_home() {
     fi
   fi
 
-  if [[ -x "$rtk_hook_dir/test.sh" ]]; then
-    local rtk_regression_output
-    if rtk_regression_output="$("$rtk_hook_dir/test.sh" 2>&1)"; then
-      pass "${label}Codex RTK Safe Hook regression"
-    else
-      fail "${label}Codex RTK Safe Hook regression failed"
-      [[ -n "$rtk_regression_output" ]] && printf '%s\n' "$rtk_regression_output" >&2
-    fi
+  check_ralph_models codex "$label" "$codex_dir"
+
+  check_hook_regression "$rtk_hook_dir/test.sh" "${label}Codex RTK Safe Hook regression"
+}
+
+check_agent_version() {
+  local label="$1"
+  local version_function="$2"
+  local minimum="$3"
+  local version=""
+  if version="$("$version_function")" && version_at_least "$version" "$minimum"; then
+    pass "$label version: $version (minimum $minimum)"
+  else
+    fail "$label version ${version:-unrecognized} is older than the verified minimum $minimum"
   fi
+}
+
+check_hook_regression() {
+  local test_script="$1"
+  local label="$2"
+  local output
+  if [[ ! -e "$test_script" ]]; then
+    fail "$label missing: $test_script"
+  elif [[ ! -x "$test_script" ]]; then
+    fail "$label not executable: $test_script"
+  elif output="$("$test_script" 2>&1)"; then
+    pass "$label"
+  else
+    fail "$label failed"
+    [[ -n "$output" ]] && printf '%s\n' "$output" >&2
+  fi
+}
+
+# check_hook_registration LABEL COMMAND...: COMMAND is an installer run with --verify.
+check_hook_registration() {
+  local label="$1" output
+  shift
+  if output="$("$@" 2>&1)"; then
+    pass "$label hook registrations"
+  else
+    fail "$label hook registrations: ${output#error: }"
+  fi
+}
+
+check_chrome_servers() {
+  local config="$1"
+  local label="$2"
+  if python3 - "$config" <<'PY'
+import json, sys
+servers = json.load(open(sys.argv[1])).get("mcpServers", {})
+for name, port in (("chrome-devtools", 9222), ("chrome-devtools-9223", 9223)):
+    expected = ["-y", "chrome-devtools-mcp@latest", f"--browser-url=http://127.0.0.1:{port}"]
+    server = servers.get(name) or {}
+    if server.get("command") != "npx" or server.get("args") != expected:
+        sys.exit(1)
+PY
+  then
+    pass "$label Chrome MCP registrations: 9222 + 9223"
+  else
+    fail "$label Chrome MCP registrations are missing or different: $config"
+  fi
+}
+
+check_ralph_runtime() {
+  local skill_dir="$1"
+  local agent="$2"
+  local label="$3"
+  if python3 "$skill_dir/scripts/ralph_runtime.py" --expect "$agent" >/dev/null 2>&1; then
+    pass "$label Ralph runtime record"
+  else
+    fail "$label Ralph runtime record is missing or invalid: $skill_dir/scripts/$agent-runtime.json"
+  fi
+}
+
+# An absent settings file is fine; an invalid one would stop every Ralph run of that agent.
+check_ralph_models() {
+  local agent="$1"
+  local label="$2"
+  local codex_home="${3:-}"
+  local output
+  if output="$(CODEX_HOME="$codex_home" python3 \
+    "$(dirname "${BASH_SOURCE[0]}")/skills/ralph-run/scripts/ralph_models.py" check --agent "$agent" 2>&1)"; then
+    pass "${label}Ralph model settings"
+  else
+    fail "${label}Ralph model settings are invalid: ${output#error: }"
+  fi
+}
+
+check_cursor_home() {
+  local cursor_dir="$HOME/.cursor"
+  local managed="$cursor_dir/hooks/codex-workstation-bootstrap"
+  check_file "$managed/rtk-cursor-safe-hook.py" "Cursor RTK Safe Hook"
+  check_file "$managed/rtk-codex-safe-hook.py" "Cursor RTK Safe Hook rules"
+  check_text "$managed/guidance.md" '<!-- BEGIN codex-workstation-bootstrap -->' "Cursor shared guidance"
+  check_hook_registration "Cursor" python3 "$(dirname "${BASH_SOURCE[0]}")/scripts/install-cursor.py" --cursor-dir "$cursor_dir" \
+    --hook-source-dir "$(dirname "${BASH_SOURCE[0]}")/hooks" --verify
+  if printf '%s' '{"hook_event_name":"sessionStart","session_id":"doctor","conversation_id":"doctor"}' \
+    | /usr/bin/python3 -B "$managed/cursor-session-guidance.py" 2>/dev/null \
+    | python3 -c 'import json, sys; sys.exit(0 if json.load(sys.stdin).get("additional_context", "").strip() else 1)'; then
+    pass "Cursor guidance hook"
+  else
+    fail "Cursor guidance hook does not return the shared guidance"
+  fi
+  check_hook_regression "$managed/test.sh" "Cursor RTK Safe Hook regression"
+  check_chrome_servers "$cursor_dir/mcp.json" "Cursor"
+  check_skill ralph-run-cursor "$cursor_dir/skills" "Cursor "
+  check_ralph_runtime "$cursor_dir/skills/ralph-run-cursor" cursor "Cursor"
+  check_ralph_models cursor "Cursor "
+}
+
+check_antigravity_home() {
+  local gemini_dir="$HOME/.gemini"
+  local managed="$gemini_dir/config/hooks/codex-workstation-bootstrap"
+  check_text "$gemini_dir/AGENTS.md" '<!-- BEGIN codex-workstation-bootstrap -->' \
+    "Antigravity shared AGENTS.md guidance"
+  check_text "$gemini_dir/AGENTS.md" '## Fail-close and clean-break' \
+    "Antigravity shared fail-close/clean-break guidance"
+  check_file "$managed/rtk-antigravity-safe-hook.py" "Antigravity RTK Safe Hook"
+  check_file "$managed/rtk-codex-safe-hook.py" "Antigravity RTK Safe Hook rules"
+  check_hook_registration "Antigravity" python3 "$(dirname "${BASH_SOURCE[0]}")/scripts/install-antigravity.py" \
+    --gemini-dir "$gemini_dir" --codex-skills-dir "$(realpath -m "$SKILLS_DIR")" \
+    --hook-source-dir "$(dirname "${BASH_SOURCE[0]}")/hooks" --verify
+  check_hook_regression "$managed/test.sh" "Antigravity RTK Safe Hook regression"
+  if python3 - "$gemini_dir/config/skills.json" "$(realpath -m "$SKILLS_DIR")" <<'PY'
+import json, sys
+entries = json.load(open(sys.argv[1])).get("entries", [])
+sys.exit(0 if {"path": sys.argv[2], "exclude": ["ralph-run"]} in entries else 1)
+PY
+  then
+    pass "Antigravity skills.json registration of $SKILLS_DIR"
+  else
+    fail "Antigravity skills.json does not register $SKILLS_DIR"
+  fi
+  check_chrome_servers "$gemini_dir/config/mcp_config.json" "Antigravity"
+  check_skill ralph-run "$gemini_dir/antigravity-cli/skills" "Antigravity "
+  check_ralph_runtime "$gemini_dir/antigravity-cli/skills/ralph-run" antigravity "Antigravity"
+  check_ralph_models antigravity "Antigravity "
 }
 
 check_file() {
@@ -126,6 +261,10 @@ check_command bun
 check_command git
 check_command python3
 check_command rtk
+check_command agent
+check_command agy
+check_agent_version "Cursor CLI" cursor_version "$CURSOR_MIN_VERSION"
+check_agent_version "Antigravity CLI" antigravity_version "$ANTIGRAVITY_MIN_VERSION"
 
 source "$(dirname "${BASH_SOURCE[0]}")/scripts/ensure-node.sh"
 if validate_chrome_node; then pass "Chrome MCP Node runtime"; else fail "Chrome MCP Node runtime"; fi
@@ -147,11 +286,25 @@ if [[ -n "${CODEX_APP_HOME:-}" ]] && [[ "$(realpath -m "$CODEX_APP_HOME")" != "$
   fi
 fi
 
+check_cursor_home
+check_antigravity_home
+
 if [[ "$skip_login" -eq 0 ]]; then
   if command -v codex >/dev/null 2>&1 && codex login status >/dev/null 2>&1; then
     pass "Codex login"
   else
     fail "Codex login required: codex login --device-auth"
+  fi
+  if cursor_logged_in; then
+    pass "Cursor CLI login"
+  else
+    fail "Cursor CLI login required: agent login"
+  fi
+  printf 'wait Antigravity CLI sign-in check (up to %s s without a session)\n' "$AGENT_SIGN_IN_TIMEOUT"
+  if antigravity_logged_in; then
+    pass "Antigravity CLI sign-in"
+  else
+    fail "Antigravity CLI sign-in required: run agy once and follow the prompt"
   fi
 fi
 

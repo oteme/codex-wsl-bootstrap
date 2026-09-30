@@ -27,6 +27,15 @@ Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, o
   rejects, leaves its work in the working tree and the next iteration continues from it.
 - Ralph directory: `<project-root>/scripts/ralph` by default. Run from the project root,
   the same directory where `./scripts/ralph/ralph.sh` would be run.
+- Models: optional, separate from the model you use interactively. Saved Ralph defaults live in
+  `$CODEX_HOME/ralph.json` (normally `~/.codex/ralph.json`) as `{"model": "<worker model>",
+  "review_model": "<reviewer model>"}` (both keys optional; setup never rewrites this file). When
+  the user names a model for this run, pass `--model <name>` for the workers and `--review-model
+  <name>` for the policy reviewer to the launcher. Each role uses the run value, then the saved
+  value; the reviewer then falls back to the worker's model; with no model anywhere Codex uses its
+  configured model. Codex has no model list command, so an unknown name fails the first `codex exec`
+  and stops the run. When the user asks to change the saved Ralph model, edit the settings file with
+  the exact model names Codex accepts; an invalid file stops every run until fixed.
 
 ## Workflow
 
@@ -53,7 +62,8 @@ Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, o
      --max-iterations 0
    ```
 
-   Replace 0 only with the user's explicit iteration limit. The launcher waits for a short startup
+   Replace 0 only with the user's explicit iteration limit. Add `--model` and `--review-model`
+   only when the user named a model for this run. The launcher waits for a short startup
    acknowledgement, returns a run ID and result file, then exits. It detaches the supervisor
    itself; do not add `&` or `nohup`. A repository lock prevents simultaneous runners.
 5. When `started=true` is returned, tell the user that Ralph started and provide the result file.
@@ -72,11 +82,18 @@ The durable result separates work status from notification status. `notification
 Codex accepted the message, not that the user read it. If queuing fails or times out, the supervisor
 records `notification=failed` and diagnostics in `notification.log`; it does not retry, switch
 servers, or claim delivery. If asked for status, run `python3 <skill-dir>/scripts/ralph-notify.py --status <result-file>`;
-it checks the recorded process identity and reports `monitoring_lost` for a dead supervisor.
+it checks the recorded process identity and reports `monitoring_lost` for a dead supervisor, and
+`notification=lost` when the supervisor stopped after the run but before it queued the result.
 The raw file's `starting`/`running`
 is only a last-recorded state, not proof of a live process. An OS/WSL shutdown or forced supervisor
 kill can prevent notification entirely. Report monitoring loss if the supervisor has disappeared;
 do not infer completion or automatically restart. The run directory is the recovery evidence.
+
+To stop a run, send one SIGTERM to the `supervisor_pid` recorded in the result file; the
+supervisor stops the runner and every agent it started, then queues an `interrupted` result.
+Never signal `runner_pid` or an agent process directly: the agent would keep changing the working
+tree after the repository lock is released. A second signal cancels the pending notification, and
+`--status` then reports `notification=lost`.
 
 ## Execution Notes
 
