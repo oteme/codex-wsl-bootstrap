@@ -1,7 +1,8 @@
 # Cursor CLI (agent) and Antigravity CLI (agy) checks shared by install.sh and doctor.sh.
 
-# Minimum versions verified on 2026-09-29: sessionStart context, preToolUse rewrites with failClosed,
-# stream-json results and --resume for Cursor; exact-name skills.json excludes, PreToolUse overwrite,
+# Minimum versions verified on 2026-09-29 and 2026-09-30: sessionStart context, preToolUse rewrites
+# with failClosed, beforeSubmitPrompt additional_context and stream-json results for Cursor;
+# exact-name skills.json excludes, PreToolUse overwrite, PreInvocation injectSteps,
 # ANTIGRAVITY_CONVERSATION_ID and an unlimited default print timeout for agy.
 CURSOR_MIN_VERSION="2026.09.28"
 ANTIGRAVITY_MIN_VERSION="1.2.13"

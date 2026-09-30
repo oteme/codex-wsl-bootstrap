@@ -306,8 +306,19 @@ mkdir -p "$HOME"
   install_antigravity_environment
 ) >/dev/null
 
-PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" CODEX_HOME="$doctor_home" \
-  bash "$ROOT/doctor.sh" --skip-login >/dev/null
+doctor_healthy_output="$(PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" CODEX_HOME="$doctor_home" \
+  bash "$ROOT/doctor.sh" --skip-login)"
+# Doctor probes both Ralph result hooks: each answers {} while no result waits and delivers one once.
+for agent_label in Cursor Antigravity; do
+  grep -Fxq "ok   $agent_label Ralph result hook" <<< "$doctor_healthy_output" || {
+    printf 'Doctor did not report: ok   %s Ralph result hook\n%s\n' "$agent_label" "$doctor_healthy_output" >&2
+    exit 1
+  }
+done
+# The probes run in a temporary home, so Doctor leaves no inbox in the real one.
+for inbox in "$HOME/.cursor/ralph-inbox" "$HOME/.gemini/antigravity-cli/ralph-inbox"; do
+  [[ ! -e "$inbox" ]] || { echo "Doctor created a Ralph inbox: $inbox" >&2; exit 1; }
+done
 
 # check_doctor_failure EXPECTED [ENV...]: Doctor must exit 1 and report EXPECTED. Its output stays in
 # doctor_failure_output.
@@ -337,6 +348,65 @@ cursor_guidance="$HOME/.cursor/hooks/codex-workstation-bootstrap/guidance.md"
 mv "$cursor_guidance" "$cursor_guidance.missing"
 check_doctor_failure 'Cursor guidance hook does not return the shared guidance'
 mv "$cursor_guidance.missing" "$cursor_guidance"
+# Doctor probes each managed Ralph result hook in a temporary home, and a hook that is missing or fails
+# a step of the probe fails Doctor with the reason. Each fake below fails one step: one adds a result
+# to every message, one fails after printing {}, one answers {} whatever waits, and the real hook
+# (REAL_HOOK) wrapped as FAKE says leaves a result it delivered waiting, leaves it unrecorded, or
+# repeats it with the next message.
+cat > "$TEST_ROOT/broken-result-hook.py" <<'PY'
+import json, os, subprocess, sys
+from pathlib import Path
+fake, last = os.environ["FAKE"], Path.home() / "last-answer"
+entries = list(Path.home().glob("**/ralph-inbox/*/*.json"))
+kept = {path: path.read_bytes() for path in entries} if fake == "waiting" else {}
+for entry in entries if fake == "unrecorded" else []:
+    result_file = Path(json.loads(entry.read_text())["result_file"])
+    kept[result_file] = result_file.read_bytes()
+answer = subprocess.run([sys.executable, "-B", os.environ["REAL_HOOK"], *sys.argv[1:]], stdin=sys.stdin,
+                        capture_output=True, text=True).stdout
+for path, content in kept.items():
+    path.write_bytes(content)
+if fake == "repeat" and answer.strip() != "{}":
+    last.write_text(answer)
+elif fake == "repeat" and last.exists():
+    answer = last.read_text()
+sys.stdout.write(answer)
+PY
+for agent_label in Cursor Antigravity; do
+  case "$agent_label" in
+    Cursor)
+      result_hook="$HOME/.cursor/hooks/codex-workstation-bootstrap/ralph-result-hook.py"
+      stale_answer='{"additional_context":"stale result"}'
+      ;;
+    Antigravity)
+      result_hook="$HOME/.gemini/config/hooks/codex-workstation-bootstrap/ralph-result-hook.py"
+      stale_answer='{"injectSteps":[{"userMessage":"stale result"}]}'
+      ;;
+  esac
+  result_failure="$agent_label Ralph result hook does not work: $result_hook"
+  real_hook="$TEST_ROOT/ralph-result-hook.py.saved"
+  mv "$result_hook" "$real_hook"
+  check_doctor_failure "$result_failure (exit 2: "
+  # The installer's --verify reports the missing file as well.
+  grep -Fq "$agent_label hook registrations: the $agent_label hook file $result_hook is missing" \
+    <<< "$doctor_failure_output" || {
+    printf 'Doctor did not report the missing %s hook file:\n%s\n' "$agent_label" "$doctor_failure_output" >&2
+    exit 1
+  }
+  printf "print('%s')\n" "$stale_answer" > "$result_hook"
+  check_doctor_failure "$result_failure (it answers something other than {} while no result waits)"
+  printf "import sys\nprint('{}')\nsys.exit(1)\n" > "$result_hook"
+  check_doctor_failure "$result_failure (exit 1: "
+  printf "print('{}')\n" > "$result_hook"
+  check_doctor_failure "$result_failure (it does not deliver a queued result)"
+  cp "$TEST_ROOT/broken-result-hook.py" "$result_hook"
+  for fake in waiting unrecorded; do
+    check_doctor_failure "$result_failure (it does not record the delivery, or leaves the result in the inbox)" \
+      REAL_HOOK="$real_hook" FAKE="$fake"
+  done
+  check_doctor_failure "$result_failure (it delivers a result twice)" REAL_HOOK="$real_hook" FAKE=repeat
+  mv "$real_hook" "$result_hook"
+done
 cp "$HOME/.gemini/config/skills.json" "$TEST_ROOT/skills.json.saved"
 # Antigravity's own skills directory must come first, and the Codex skills must be registered.
 own_skills="{\"path\": \"$HOME/.gemini/antigravity-cli/skills\"}"
@@ -422,6 +492,11 @@ check_changed_json \
   "Antigravity hook registrations: the Antigravity hook registration in $HOME/.gemini/config/hooks.json" \
   "$HOME/.gemini/config/hooks.json" \
   'data["codex-workstation-bootstrap-rtk"]["PreToolUse"][0]["matcher"] = "view_file"'
+# The registrations that setup wrote before the Ralph result hook existed fail Doctor.
+check_changed_json "$cursor_hooks_mismatch" "$HOME/.cursor/hooks.json" 'del data["hooks"]["beforeSubmitPrompt"]'
+check_changed_json \
+  "Antigravity hook registrations: the Antigravity hook registration in $HOME/.gemini/config/hooks.json" \
+  "$HOME/.gemini/config/hooks.json" 'del data["codex-workstation-bootstrap-rtk"]["PreInvocation"]'
 # With every file restored, Doctor passes again.
 PATH="$test_bin:$PATH" RTK_BIN="$test_bin/rtk" CODEX_HOME="$doctor_home" \
   bash "$ROOT/doctor.sh" --skip-login >/dev/null

@@ -10,7 +10,7 @@ iteration starts with a clean agent context, receives the Ralph worker protocol 
 skill, reads the project's notes in `CLAUDE.md`, and updates `prd.json` and `progress.txt`. The
 runner independently reviews each diff for fail-close/clean-break violations, commits only approved
 work, and runs under a detached supervisor until every story is approved or the iteration budget is
-used up. The supervisor then resumes this Antigravity conversation once with the result.
+used up. The result is then added to the next message sent in this Antigravity conversation.
 
 Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, or the `prd`/`ralph`
 skills just to run the loop. The runner reads them as-is.
@@ -43,9 +43,10 @@ skills just to run the loop. The runner reads them as-is.
    with `/prd`, then convert it with `/ralph`.
 3. Require `ANTIGRAVITY_CONVERSATION_ID` in your shell environment (agy sets it for commands the
    agent runs). It must be a UUID. If it is missing, stop before starting work; do not substitute
-   another ID. Setup records its verified agy's absolute path in `scripts/antigravity-runtime.json`;
-   the supervisor, workers, reviewer and result delivery use that executable. If the record or
-   executable is missing or invalid, stop and rerun `Downloads/setup-wsl.cmd`.
+   another ID. Setup records its verified agy's absolute path in
+   `<skill-dir>/scripts/antigravity-runtime.json`, next to `ralph-notify.py` (not in the project); the
+   supervisor, workers and reviewer use that executable. If the record or executable is missing or
+   invalid, stop and rerun `Downloads/setup-wsl.cmd`.
 4. Start exactly one supervisor, using the script alongside this skill:
 
    ```bash
@@ -59,31 +60,33 @@ skills just to run the loop. The runner reads them as-is.
    acknowledgement, returns a run ID and result file, then exits. It detaches the supervisor itself;
    do not add `&` or `nohup`, and do not run it as a background task. A repository lock prevents
    simultaneous runners.
-5. When `started=true` is returned, tell the user that Ralph started and provide the result file.
+5. When `started=true` is returned, tell the user that Ralph started, provide the result file, and
+   say that the result will come with their next message in this conversation once the run ends (an
+   agy session started before the latest setup gets it only after the session is restarted).
    **End the turn.** Do not keep the turn active with waits, sleeps, process checks or log polling.
-6. When a `[Ralph result]` message arrives in this conversation, read that run's `result.json` and
-   report its terminal status, iterations, exit code and progress path. `limit_reached` means the
+6. When a `[Ralph result]` message appears after a user message, read that run's `result.json` and
+   report its terminal status, iterations, exit code and progress path before answering the user. A
+   `[Ralph result]` saying that a result could not be read, or that its delivery cannot be recorded,
+   names the file involved; report it as it is. `limit_reached` means the
    budget ran out with stories still pending; the uncommitted work of the current story stays in the
    working tree. Read the latest `progress.txt` entry before deciding whether to run again.
    `failed` and `interrupted` are not success. Do not launch another run automatically.
 
-The durable result separates work status from delivery status. agy has no message queue, so the
-supervisor delivers the result by resuming this conversation once with a headless turn (`agy
---conversation <id> -p ...`, without automatic approvals), no earlier than a minute after the run
-started, so that it cannot collide with the turn that started Ralph. `notification=delivered` means
-agy ran that turn in this same conversation; if you have this conversation open in an interactive
-session, the turn appears when the conversation is reloaded. agy silently starts a new conversation
-for an unknown ID, so delivery counts only when agy reports this conversation back; otherwise the
-supervisor records `notification=failed` with `notification_error` and does not retry. If asked for
-status, run `python3 <skill-dir>/scripts/ralph-notify.py --status <result-file>`; it reports
-`monitoring_lost` for a dead supervisor, and `notification=lost` when the supervisor stopped after the
-run but before it delivered the result. Never start a second run to recover a notification.
+The durable result separates work status from delivery status. agy has no message queue, so when the
+run ends the supervisor leaves the result in `~/.gemini/antigravity-cli/ralph-inbox/<conversation>/`
+and records `notification=queued`. The result hook that setup installs (`PreInvocation`) adds it as a
+user message at the first model call of this conversation's next turn, whether the conversation is
+open in an interactive session or resumed later, and records `notification=delivered` once it has
+handed the result to agy. Nothing appears in the conversation before that, and a hook stopped right
+after handing a result over can hand it over once more. If asked for status, run
+`python3 <skill-dir>/scripts/ralph-notify.py --status <result-file>`; it reports `monitoring_lost`
+for a dead supervisor, and `notification=lost` when the supervisor stopped after the run but before
+it left the result in the inbox. Never start a second run to recover a notification.
 
 To stop a run, send one SIGTERM to the `supervisor_pid` recorded in the result file; the
-supervisor stops the runner and every agent it started, then delivers an `interrupted` result.
+supervisor stops the runner and every agent it started, then queues an `interrupted` result.
 Never signal `runner_pid` or an agent process directly: the agent would keep changing the working
-tree after the repository lock is released. A second signal cancels the pending delivery, and
-`--status` then reports `notification=lost`.
+tree after the repository lock is released.
 
 ## Execution Notes
 

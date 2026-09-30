@@ -18,6 +18,7 @@ HOOK_NAME = "codex-workstation-bootstrap-rtk"
 SOURCES = {
     "rtk-codex-safe-hook.py": "rtk-codex-safe-hook.py",
     "rtk-antigravity-safe-hook.py": "rtk-antigravity-safe-hook.py",
+    "ralph-result-hook.py": "ralph-result-hook.py",
     "test.sh": "test-rtk-antigravity-safe-hook.sh",
 }
 # Orca registers its own named hook in the same file.
@@ -38,8 +39,15 @@ SERVERS = {"chrome-devtools": chrome(9222), "chrome-devtools-9223": chrome(9223)
 
 
 def managed_hook(managed):
-    command = "/usr/bin/python3 -B " + shlex.quote(str(managed / "rtk-antigravity-safe-hook.py"))
-    return {"PreToolUse": [{"matcher": "run_command", "hooks": [{"type": "command", "command": command, "timeout": 10}]}]}
+    def command(name):
+        return "/usr/bin/python3 -B " + shlex.quote(str(managed / name))
+    return {
+        "PreToolUse": [{"matcher": "run_command",
+                        "hooks": [{"type": "command", "command": command("rtk-antigravity-safe-hook.py"), "timeout": 10}]}],
+        # The result hook serves both agents, so the command names Antigravity. PreInvocation takes
+        # no matcher group: its handlers are listed directly.
+        "PreInvocation": [{"type": "command", "command": command("ralph-result-hook.py") + " antigravity", "timeout": 10}],
+    }
 
 
 def skills_entry(skills):
@@ -101,8 +109,9 @@ class AntigravityInstallTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.source = self.root / "hook source"
+        # Each fixture prints its name and the arguments it was started with.
         for name in SOURCES.values():
-            write(self.source / name, f"print('fixture {name}')\n")
+            write(self.source / name, f"import sys\nprint('fixture {name}', *sys.argv[1:])\n")
         self.gemini = self.root / "home dir" / ".gemini"
         self.skills = self.root / "home dir" / ".codex" / "skills"
 
@@ -268,16 +277,48 @@ class AntigravityInstallTests(unittest.TestCase):
 
         entry = hook["PreToolUse"][0]
         handler = entry["hooks"][0]
+        invocation = hook["PreInvocation"][0]
         cases = [
-            ("another timeout", {**ORCA, HOOK_NAME: {"PreToolUse": [{**entry, "hooks": [{**handler, "timeout": 30}]}]}}),
-            ("another matcher", {**ORCA, HOOK_NAME: {"PreToolUse": [{**entry, "matcher": "*"}]}}),
+            ("another timeout", {**ORCA, HOOK_NAME: {**hook, "PreToolUse": [{**entry, "hooks": [{**handler, "timeout": 30}]}]}}),
+            ("another matcher", {**ORCA, HOOK_NAME: {**hook, "PreToolUse": [{**entry, "matcher": "*"}]}}),
             ("missing", ORCA),
             ("managed directory in another named hook", {**ORCA, HOOK_NAME: hook, "rtk-copy": hook}),
+            # Setup before the result hook wrote PreToolUse alone.
+            ("PreInvocation missing", {**ORCA, HOOK_NAME: {"PreToolUse": hook["PreToolUse"]}}),
+            ("PreInvocation with another timeout", {**ORCA, HOOK_NAME: {**hook, "PreInvocation": [{**invocation, "timeout": 30}]}}),
+            ("PreInvocation without the agent argument", {**ORCA, HOOK_NAME: {
+                **hook, "PreInvocation": [{**invocation, "command": invocation["command"].removesuffix(" antigravity")}]}}),
+            ("PreInvocation with the Cursor argument", {**ORCA, HOOK_NAME: {
+                **hook, "PreInvocation": [{**invocation, "command": invocation["command"].removesuffix(" antigravity") + " cursor"}]}}),
+            ("PreInvocation registered twice", {**ORCA, HOOK_NAME: {**hook, "PreInvocation": [invocation, invocation]}}),
+            ("PreInvocation in a matcher group", {**ORCA, HOOK_NAME: {**hook, "PreInvocation": [{"hooks": [invocation]}]}}),
+            ("PreInvocation under another event", {**ORCA, HOOK_NAME: {"PreToolUse": hook["PreToolUse"], "PostInvocation": [invocation]}}),
+            ("PreInvocation also under another event", {**ORCA, HOOK_NAME: {**hook, "PostInvocation": [invocation]}}),
+            ("PreInvocation also in another named hook", {**ORCA, HOOK_NAME: hook, "ralph-result": {"PreInvocation": [invocation]}}),
         ]
         for name, hooks in cases:
             with self.subTest(name):
                 write(config / "hooks.json", hooks)
                 self.assertRefused(self.gemini, "is not the one setup writes", "--verify")
+
+    def test_verify_requires_every_managed_hook_file(self):
+        # A registered hook whose file is gone fails each time it runs, so --verify refuses a managed
+        # hook file that is missing or a symlink, even one to the file setup copies. A directory in
+        # its place is refused before that, as setup would refuse to replace it.
+        for index, name in enumerate(SOURCES):
+            for case in ["missing", "symlink", "directory"]:
+                with self.subTest(name=name, case=case):
+                    gemini = self.root / f"case {index} {case}" / ".gemini"
+                    self.install(gemini)
+                    path = gemini / MANAGED / name
+                    path.unlink()
+                    message = f"the Antigravity hook file {path} is missing"
+                    if case == "symlink":
+                        path.symlink_to(self.source / SOURCES[name])
+                    elif case == "directory":
+                        path.mkdir()
+                        message = f"refusing to replace non-regular managed file: {path}"
+                    self.assertRefused(gemini, message, "--verify")
 
     def test_refusals_change_nothing(self):
         def symlinked(name, content):
@@ -397,7 +438,7 @@ class AntigravityInstallTests(unittest.TestCase):
                 self.assertFalse(self.gemini.exists())
                 self.assertFalse((self.root / "relative").exists())
 
-    def test_hook_command_runs_from_paths_with_spaces_and_quotes(self):
+    def test_hook_commands_run_from_paths_with_spaces_and_quotes(self):
         for gemini in [self.gemini, self.root / "it's a home" / ".gemini"]:
             with self.subTest(str(gemini)):
                 self.install(gemini)
@@ -406,9 +447,11 @@ class AntigravityInstallTests(unittest.TestCase):
                 self.assertEqual(snapshot(self.root), first)
                 hooks = read(gemini / "config/hooks.json")
                 self.assertEqual(hooks, {HOOK_NAME: managed_hook(gemini / MANAGED)})
-                command = hooks[HOOK_NAME]["PreToolUse"][0]["hooks"][0]["command"]
-                result = subprocess.run(command, shell=True, capture_output=True, text=True)
-                self.assertEqual((result.returncode, result.stdout), (0, "fixture rtk-antigravity-safe-hook.py\n"), result.stderr)
+                # The fixture prints the arguments it received: the result hook gets exactly `antigravity`.
+                for handler, name in [(hooks[HOOK_NAME]["PreToolUse"][0]["hooks"][0], "rtk-antigravity-safe-hook.py"),
+                                      (hooks[HOOK_NAME]["PreInvocation"][0], "ralph-result-hook.py antigravity")]:
+                    result = subprocess.run(handler["command"], shell=True, capture_output=True, text=True)
+                    self.assertEqual((result.returncode, result.stdout), (0, f"fixture {name}\n"), result.stderr)
 
 
 if __name__ == "__main__":
