@@ -7,17 +7,19 @@ set -euo pipefail
 # prompt must directly follow -p (agy reads the next argument as the prompt). --print-timeout is not
 # passed: its expiry would end the run with partial output and exit status 0.
 RALPH_RUNNER_NAME="ralph-run-antigravity.sh"
+RALPH_SKILL_LABEL="Antigravity ralph-run"
 RALPH_AGENT_LOG_PREFIX="antigravity"
 RALPH_AGENT_EXEC_LABEL="agy -p"
 RALPH_WORKER_RESTRICTION="Do not invoke the ralph-run skill, do not run ralph-run-antigravity.sh or ralph-notify.py, and do not launch another agy -p, agent -p, codex exec, or autonomous loop."
 RALPH_REVIEW_EXTRA='Before judging, run "git write-tree" in that worktree and report its exact output as reviewed_tree.'
+RALPH_REVIEW_DIFF_COMMAND="git diff --cached HEAD"
 
 ralph_resolve_agent() {
   AGY_BIN="$(python3 "$SCRIPT_DIR/ralph_runtime.py" --expect antigravity)"
   ralph_resolve_models antigravity
   AGY_REVIEW_SCHEMA="$SCRIPT_DIR/../assets/policy-review-reviewed-tree.schema.json"
   if [[ ! -f "$AGY_REVIEW_SCHEMA" ]]; then
-    echo "error: Ralph policy gate files are missing; reinstall the Antigravity ralph-run skill" >&2
+    echo "error: Ralph policy gate files are missing; reinstall the $RALPH_SKILL_LABEL skill" >&2
     echo "missing: $AGY_REVIEW_SCHEMA" >&2
     exit 1
   fi

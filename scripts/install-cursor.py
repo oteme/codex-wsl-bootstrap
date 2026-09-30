@@ -127,6 +127,38 @@ def hook_command(script: Path) -> str:
     return f"/usr/bin/python3 -B {shlex.quote(str(script))}"
 
 
+def managed_handlers(managed_dir: Path) -> dict[str, dict[str, object]]:
+    # Cursor evaluates matcher as a regular expression, so it is anchored to the Shell tool alone.
+    return {
+        "preToolUse": {
+            "command": hook_command(managed_dir / "rtk-cursor-safe-hook.py"),
+            "matcher": "^Shell$",
+            "timeout": 10,
+            "failClosed": True,
+        },
+        "sessionStart": {"command": hook_command(managed_dir / "cursor-session-guidance.py"), "timeout": 10},
+    }
+
+
+def verify_hooks(path: Path, managed_dir: Path) -> None:
+    """Refuse when the managed handlers are not registered exactly as setup writes them."""
+    data = read_json_object(path, "Cursor hooks file")
+    version = data.get("version") if data is not None else None
+    if type(version) is not int or version != 1:
+        raise SystemExit(f'error: the Cursor hooks file {path} lacks "version": 1')
+    hooks = data.get("hooks")
+    registered: dict[str, list[object]] = {}
+    if isinstance(hooks, dict):
+        for event, handlers in hooks.items():
+            found = [handler for handler in handlers if isinstance(handler, dict)
+                     and references(handler.get("command"), managed_dir)] if isinstance(handlers, list) else []
+            if found:
+                registered[event] = found
+    expected = {event: [handler] for event, handler in managed_handlers(managed_dir).items()}
+    if registered != expected:
+        raise SystemExit(f"error: the Cursor hook registration in {path} is not the one setup writes")
+
+
 def merge_hooks(path: Path, managed_dir: Path) -> dict[str, object]:
     data = read_json_object(path, "Cursor hooks file")
     if data is None:
@@ -153,17 +185,8 @@ def merge_hooks(path: Path, managed_dir: Path) -> dict[str, object]:
         cleaned[event] = [
             handler for handler in handlers if not references(handler.get("command"), managed_dir)
         ]
-    cleaned.setdefault("preToolUse", []).append(
-        {
-            "command": hook_command(managed_dir / "rtk-cursor-safe-hook.py"),
-            "matcher": "Shell",
-            "timeout": 10,
-            "failClosed": True,
-        }
-    )
-    cleaned.setdefault("sessionStart", []).append(
-        {"command": hook_command(managed_dir / "cursor-session-guidance.py"), "timeout": 10}
-    )
+    for event, handler in managed_handlers(managed_dir).items():
+        cleaned.setdefault(event, []).append(handler)
     data["hooks"] = cleaned
     return data
 
@@ -188,40 +211,60 @@ def merge_mcp(path: Path) -> dict[str, object]:
     return data
 
 
+# Cursor refuses sessionStart additional_context longer than 10,000 JavaScript characters.
+MAX_GUIDANCE_LENGTH = 10_000
+
+
+def read_guidance(path: Path) -> bytes:
+    if not path.is_file():
+        raise SystemExit(f"error: Cursor guidance file is missing: {path}")
+    guidance = path.read_bytes()
+    # cursor-session-guidance.py fails every session on empty guidance.
+    if not guidance.strip():
+        raise SystemExit(f"error: Cursor guidance file is empty: {path}")
+    try:
+        length = len(guidance.decode("utf-8").encode("utf-16-le")) // 2
+    except UnicodeDecodeError:
+        raise SystemExit(f"error: Cursor guidance file is not UTF-8: {path}")
+    if length > MAX_GUIDANCE_LENGTH:
+        raise SystemExit(f"error: Cursor guidance is {length} characters; Cursor accepts at most "
+                         f"{MAX_GUIDANCE_LENGTH}: {path}")
+    return guidance
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cursor-dir", required=True, type=Path)
     parser.add_argument("--hook-source-dir", required=True, type=Path)
-    parser.add_argument("--guidance-file", required=True, type=Path)
-    parser.add_argument("--rtk-version", required=True)
-    parser.add_argument("--check-only", action="store_true")
+    parser.add_argument("--guidance-file", type=Path, help="required unless --check-only or --verify")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check-only", action="store_true", help="check the settings without writing")
+    mode.add_argument("--verify", action="store_true", help="check the installed hook registration")
     args = parser.parse_args()
 
     if not args.cursor_dir.is_absolute():
         raise SystemExit(f"error: --cursor-dir must be an absolute path: {args.cursor_dir}")
-    if not args.rtk_version or any(character.isspace() for character in args.rtk_version):
-        raise SystemExit(f"error: invalid RTK version: {args.rtk_version!r}")
     contents: dict[str, tuple[bytes, int]] = {}
     for name, source_name in HOOK_FILES.items():
         source = args.hook_source_dir / source_name
         if not source.is_file():
             raise SystemExit(f"error: Cursor hook source is missing: {source}")
         contents[name] = (source.read_bytes(), 0o755)
-    if not args.guidance_file.is_file():
-        raise SystemExit(f"error: Cursor guidance file is missing: {args.guidance_file}")
-    guidance = args.guidance_file.read_bytes()
-    # cursor-session-guidance.py fails every session on empty guidance.
-    if not guidance.strip():
-        raise SystemExit(f"error: Cursor guidance file is empty: {args.guidance_file}")
-    contents["guidance.md"] = (guidance, 0o644)
-    contents["rtk-version"] = (f"{args.rtk_version}\n".encode("utf-8"), 0o644)
+    if args.guidance_file is not None:
+        contents["guidance.md"] = (read_guidance(args.guidance_file), 0o644)
+    elif not (args.check_only or args.verify):
+        raise SystemExit("error: --guidance-file is required to install the Cursor hooks")
 
     require_directory(args.cursor_dir, "Cursor directory")
     hooks_dir = args.cursor_dir / "hooks"
     managed_dir = hooks_dir / MANAGED_DIR_NAME
-    validate_managed_dir(hooks_dir, managed_dir, [MARKER, *contents])
+    validate_managed_dir(hooks_dir, managed_dir, [MARKER, *HOOK_FILES, "guidance.md"])
     hooks_path = args.cursor_dir / "hooks.json"
     mcp_path = args.cursor_dir / "mcp.json"
+    if args.verify:
+        verify_hooks(hooks_path, managed_dir)
+        read_guidance(managed_dir / "guidance.md")
+        return 0
     hooks_data = merge_hooks(hooks_path, managed_dir)
     mcp_data = merge_mcp(mcp_path)
     if args.check_only:

@@ -26,7 +26,17 @@ for command in \
   'printf "a;b"' \
   'name="go test ./..."' \
   'find ./marker -delete' \
-  'git diff --output=marker' \
+  'go test --output=marker ./...' \
+  'go test --output marker ./...' \
+  'git log' \
+  'git log --oneline -30' \
+  'git log main~20..main' \
+  'git diff --cached HEAD' \
+  'git show HEAD' \
+  'head -2 notes.txt' \
+  'head -n 3 notes.txt' \
+  'head  -n 3 notes.txt' \
+  'tail -n 5 app.log' \
   'npx eslint --fix example.js' \
   'rm -rf /tmp/not-run'; do
   output="$(payload "$command" | python3 "$HOOK")"

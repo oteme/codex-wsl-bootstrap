@@ -20,7 +20,7 @@ set -euo pipefail
 [[ "${1:-}" == hook && "${2:-}" == check ]]
 case "${3:-}" in
   'go test ./...') printf 'rtk go test ./...\n' ;;
-  'npm test' | 'bun test' | 'yarn lint' | 'pnpm test' | 'tail -f app.log' | '  npm test -- --grep "a b"  ')
+  'npm test' | 'bun test' | 'yarn lint' | 'pnpm test' | 'npm test -- --grep "a b"')
     # Like RTK 0.46: no rewrite is reported with the verbatim command on stderr and exit code 1.
     printf 'No rewrite for: %s\n' "${3:-}" >&2
     exit 1
@@ -116,7 +116,7 @@ assert_no_opinion() {
   local input="$1"
   run_hook "$input" "${2:-$fake_rtk}"
   [[ "$(< "$stdout_file")" == '{}' ]] || {
-    echo "unexpected hook output for: $input" >&2
+    echo "unexpected hook output for: ${input:0:200}" >&2
     cat "$stdout_file" >&2
     exit 1
   }
@@ -152,18 +152,34 @@ done
 assert_rewritten 'go test ./...' 'rtk go test ./...'
 
 # RTK has no rewrite for these allowlisted commands; they must run unchanged, not be denied.
-for command in 'npm test' 'bun test' 'yarn lint' 'pnpm test' 'tail -f app.log' '  npm test -- --grep "a b"  '; do
+for command in 'npm test' 'bun test' 'yarn lint' 'pnpm test' 'npm test -- --grep "a b"'; do
   assert_no_opinion "$(payload "$command")"
 done
 
 # A failing RTK proves these commands stay unchanged without RTK being consulted.
 for command in \
   'npx prettier --write example.js' \
+  'go test --output=marker ./...' \
+  'go test --output marker ./...' \
   'git push origin main' \
+  'git diff --cached HEAD' \
+  'git show HEAD' \
+  'git log' \
+  'git log --oneline -30' \
+  'git log main~20..main' \
+  'head -2 notes.txt' \
+  'head -n 3 notes.txt' \
+  'tail -n 5 app.log' \
+  'tail -f app.log' \
   'go env' \
   'unknown-command argument' \
   'go test ./... | tail -20' \
   $'go test ./...\nprintf done'; do
+  assert_no_opinion "$(payload "$command")" "$failing_rtk"
+done
+# RTK misread other spacing (`head  -n 3` read the whole file), so only single-spaced commands are
+# rewritten; 'ls -la' above still is.
+for command in 'ls  -la' 'git  status' ' ls -la' 'ls -la ' $'ls\t-la' '  npm test -- --grep "a b"  '; do
   assert_no_opinion "$(payload "$command")" "$failing_rtk"
 done
 
@@ -186,6 +202,16 @@ assert_denied '{"hook_event_name":"preToolUse","tool_name":"Shell","tool_input":
 assert_denied '{"hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"if then"}}' 'empty or invalid Shell command'
 assert_denied "$(python3 -c 'print("x" * (1024 * 1024 + 1), end="")')" 'oversized'
 
+# long_payload PREFIX SUFFIX: a Shell call whose command is PREFIX, 140,000 a's and SUFFIX, longer
+# than the 128 KiB one argument may hold. bash -n reads it on stdin, so it is still checked; RTK
+# takes it only as an argument, so an allowlisted one runs unchanged, not denied.
+long_payload() {
+  python3 -c 'import json,sys; print(json.dumps({"conversation_id":"test","generation_id":"test","hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":sys.argv[1] + "a" * 140000 + sys.argv[2],"working_directory":"/work/project","timeout":30000}}))' "$1" "$2"
+}
+assert_no_opinion "$(long_payload 'ls ' '')"
+assert_no_opinion "$(long_payload $'cat > notes.txt <<\'EOF\'\n' $'\nEOF')"
+assert_denied "$(long_payload 'echo ' ' )')" 'empty or invalid Shell command'
+
 assert_denied "$(payload 'go test ./...')" 'exit code 9' "$failing_rtk"
 assert_denied "$(payload 'go test ./...')" 'failed to inspect' "$TEST_ROOT/missing-rtk"
 
@@ -205,7 +231,8 @@ assert_denied "$(payload 'go test ./...')" 'unexpected RTK rewrite' "$TEST_ROOT/
 assert_denied "$(payload 'go test ./...')" 'unparsable RTK rewrite' "$TEST_ROOT/rtk-invalid"
 assert_denied "$(payload 'go test ./...')" 'complex or invalid RTK rewrite' "$TEST_ROOT/rtk-complex"
 
-# Only exit 1 with empty stdout and the exact report for this command means "no rewrite".
+# Of the non-zero results, only exit 1 with empty stdout and the exact report for this command
+# means "no rewrite".
 FAKE_STDOUT='' FAKE_STDERR=$'No rewrite for: go test ./...\n' FAKE_STATUS=1 \
   assert_no_opinion "$(payload 'go test ./...')" "$fixed_rtk"
 FAKE_STDOUT='' FAKE_STDERR=$'error: failed to load RTK config\n' FAKE_STATUS=1 \
@@ -230,8 +257,9 @@ FAKE_STDOUT='' FAKE_STDERR="$rtk_warning"$'\nNo rewrite for: go test ./...\n' FA
 FAKE_STDOUT='' FAKE_STDERR="$rtk_warning"$'\n' FAKE_STATUS=1 \
   assert_denied "$(payload 'npm test')" 'exit code 1' "$fixed_rtk"
 
+# bash -n drops a NUL byte, so it would check another command than the one given.
+assert_denied '{"hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"ls\u0000 -la"}}' 'empty or invalid Shell command'
 # Crashes inside the shared rules still become a single deny instead of a blocked, silent call.
-assert_denied '{"hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"ls\u0000 -la"}}' 'failed unexpectedly: ValueError'
 assert_denied "$(python3 -c 'print("[" * 100000)')" 'RTK Safe Hook'
 
 missing_dir="$TEST_ROOT/missing-rules"

@@ -7,8 +7,9 @@
 - このリポジトリの変更を環境へ適用するときは、先にPRを作成して `main` にマージする。
 - セットアップはWindowsの `Downloads/setup-wsl.cmd` から実行する。この環境の指定パスは
   `/mnt/c/Users/reisu/Downloads/setup-wsl.cmd`（Windowsでは `C:\Users\reisu\Downloads\setup-wsl.cmd`）。
-- `~/.codex/skills` やWindows側の `.codex/skills` への直接コピー、`install.sh` や
-  `scripts/install-skill.sh` の直接実行による環境への適用は行わない。CMDから呼ばれる内部処理は許可する。
+- `~/.codex/skills` やWindows側の `.codex/skills`、`~/.cursor` や `~/.gemini` の管理対象（スキル、フック、
+  設定ファイル）への直接コピー、`install.sh` や `scripts/install-skill.sh` の直接実行による環境への適用は
+  行わない。CMDから呼ばれる内部処理は許可する。
 - CMDは公開済み `main` を取得する。未マージの変更をローカルコピーで先行適用しない。
 - セットアップが失敗したら原因を明示し、直接インストールへの切り替えやローカル変更の破棄で回避しない。
 - 一時ディレクトリを使う自動テストは環境へのセットアップとは区別する。

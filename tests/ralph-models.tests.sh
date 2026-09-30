@@ -31,6 +31,8 @@ expect_error() {
 # Without any setting every agent keeps its CLI's default model.
 for agent in codex cursor antigravity; do
   [[ "$(resolved "$agent")" == "|" ]]
+  # An empty override in the environment means "not set".
+  [[ "$(resolved "$agent" RALPH_MODEL= RALPH_REVIEW_MODEL=)" == "|" ]]
   python3 "$MODELS" check --agent "$agent"
 done
 
@@ -43,6 +45,24 @@ printf '{"review_model": "gemini-3.1-pro-high"}\n' > "$HOME/.gemini/antigravity-
 [[ "$(resolved cursor)" == "claude-opus-5-thinking-high|claude-opus-5-thinking-high" ]]
 # Only a reviewer default: workers keep the CLI default.
 [[ "$(resolved antigravity)" == "|gemini-3.1-pro-high" ]]
+# An empty override in the environment still falls back to the saved default.
+[[ "$(resolved cursor RALPH_MODEL=)" == "claude-opus-5-thinking-high|claude-opus-5-thinking-high" ]]
+[[ "$(resolved antigravity RALPH_REVIEW_MODEL=)" == "|gemini-3.1-pro-high" ]]
+
+# An unknown agent is an error, never another agent's settings (the CLI only offers known agents).
+python3 -B - "$ROOT/skills/ralph-run/scripts" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import ralph_models
+for agent in ('gemini', 'Cursor', '', None):
+    for function in (ralph_models.settings_path, ralph_models.saved, ralph_models.resolve):
+        try:
+            function(agent)
+        except ValueError as exc:
+            assert str(exc) == f'unknown agent: {agent!r}', exc
+        else:
+            raise AssertionError(f'{function.__name__} accepted the agent {agent!r}')
+PY
 
 # Run overrides win over saved defaults, each role on its own.
 [[ "$(resolved codex RALPH_MODEL=run-worker)" == "run-worker|codex-reviewer" ]]
@@ -82,4 +102,4 @@ mkdir "$cursor_settings"
 expect_error 'invalid Ralph model settings' python3 "$MODELS" check --agent cursor
 rmdir "$cursor_settings"
 
-printf '%s\n' 'PASS: Ralph model defaults, run overrides, reviewer fallback, and invalid settings.'
+printf '%s\n' 'PASS: Ralph model defaults, run overrides, empty overrides, reviewer fallback, unknown agents, and invalid settings.'

@@ -31,7 +31,9 @@ def settings_path(agent):
         return Path(os.environ.get('CODEX_HOME') or home / '.codex') / 'ralph.json'
     if agent == 'cursor':
         return home / '.cursor' / 'ralph.json'
-    return home / '.gemini' / 'antigravity-cli' / 'ralph.json'
+    if agent == 'antigravity':
+        return home / '.gemini' / 'antigravity-cli' / 'ralph.json'
+    raise ValueError(f'unknown agent: {agent!r}')
 
 
 def valid_model(value, origin):
@@ -63,8 +65,8 @@ def resolve(agent, model=None, review_model=None):
         model = os.environ.get('RALPH_MODEL') or None
     if review_model is None:
         review_model = os.environ.get('RALPH_REVIEW_MODEL') or None
-    worker = valid_model(model, 'the run model') if model else defaults.get('model')
-    reviewer = (valid_model(review_model, 'the run review model') if review_model
+    worker = valid_model(model, 'the run model') if model is not None else defaults.get('model')
+    reviewer = (valid_model(review_model, 'the run review model') if review_model is not None
                 else defaults.get('review_model', worker))
     return worker, reviewer
 

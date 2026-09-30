@@ -10,18 +10,24 @@ case "$RALPH_TEST_AGENT" in
     AGENT_COMMAND="codex"
     AUTONOMY_FLAG="--dangerously-bypass-approvals-and-sandbox"
     AGENT_FAILURE="codex exec failed"
+    REINSTALL_HINT="reinstall the ralph-run skill"
+    REVIEW_DIFF_COMMAND="git diff --cached HEAD"
     ;;
   cursor)
     RUNNER_NAME="ralph-run-cursor.sh"
     AGENT_COMMAND="agent"
     AUTONOMY_FLAG="--force"
     AGENT_FAILURE="agent -p failed"
+    REINSTALL_HINT="reinstall the ralph-run-cursor skill"
+    REVIEW_DIFF_COMMAND="git diff --cached HEAD | cat"
     ;;
   antigravity)
     RUNNER_NAME="ralph-run-antigravity.sh"
     AGENT_COMMAND="agy"
     AUTONOMY_FLAG="--dangerously-skip-permissions"
     AGENT_FAILURE="agy -p failed"
+    REINSTALL_HINT="reinstall the Antigravity ralph-run skill"
+    REVIEW_DIFF_COMMAND="git diff --cached HEAD"
     ;;
   *)
     echo "unknown RALPH_TEST_AGENT: $RALPH_TEST_AGENT" >&2
@@ -33,6 +39,8 @@ trap 'rm -rf "$TEST_ROOT"' EXIT
 # Ralph model settings live in the agent homes; keep this machine's own settings out of the runs.
 export HOME="$TEST_ROOT/home"
 unset CODEX_HOME RALPH_MODEL RALPH_REVIEW_MODEL
+# Only the runner may set RALPH_RUN_ACTIVE: the fake agent requires it on every call.
+unset RALPH_RUN_ACTIVE
 mkdir -p "$HOME"
 
 # Isolate the installed runtime; the executable shim uses the existing exported mock.
@@ -65,6 +73,8 @@ import sys
 kind, message_path, cwd, role = sys.argv[1:5]
 mode = os.environ.get('MOCK_MODE', '')
 text = open(message_path, encoding='utf-8').read()
+auto_denied = ('jetski: no output produced - a tool required the "command" permission that headless '
+               'mode cannot prompt for, so it was auto-denied.')
 review = None
 if role == 'review':
     review = json.loads(text)
@@ -75,11 +85,19 @@ if kind == 'cursor':
         text = json.dumps(review)
         if mode == 'review-fenced':
             text = '```json\n' + text + '\n```'
+        # An approval wrapped in prose, bare or fenced, is not exactly one JSON object.
+        if mode == 'cursor-review-prose':
+            text = 'I read the staged diff.\n' + text + '\nNo listed policy problem is present.'
+        if mode == 'cursor-review-prose-fenced':
+            text = ('I read the staged diff.\n```json\n' + text
+                    + '\n```\nNo listed policy problem is present.')
+    unsuccessful = (mode == 'cursor-unsuccessful'
+                    or (mode == 'cursor-review-unsuccessful' and review is not None))
     for event in [
         {'type': 'system', 'subtype': 'init'},
         {'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'Working on it.'}]}},
         {'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': text}]}},
-        {'type': 'result', 'subtype': 'success', 'is_error': mode == 'cursor-unsuccessful',
+        {'type': 'result', 'subtype': 'success', 'is_error': unsuccessful,
          'session_id': 'fixture'},
     ]:
         print(json.dumps(event))
@@ -91,10 +109,18 @@ else:
             sys.exit('the agy reviewer must be constrained with --json-schema')
         reply['structured_output'] = review
         reply['response'] = json.dumps(review)
+        # A well-formed approval that only the reviewer's own stderr betrays.
+        if mode == 'agy-review-auto-denied':
+            print(auto_denied, file=sys.stderr)
+        # The approval appears only as response text, never as structured output.
+        if mode == 'agy-review-no-structured-output':
+            del reply['structured_output']
     if mode == 'agy-auto-denied':
-        print('jetski: no output produced - a tool required the "command" permission that headless '
-              'mode cannot prompt for, so it was auto-denied.', file=sys.stderr)
+        print(auto_denied, file=sys.stderr)
         reply['response'] = ''
+    # A tool the headless run denied, reported only in the reply: status SUCCESS, nothing on stderr.
+    if mode == ('agy-review-denied-actions' if review is not None else 'agy-denied-actions'):
+        reply['denied_actions'] = [{'action': 'command', 'display_name': 'RunCommand'}]
     print(json.dumps(reply))
 PY_REPLY
 
@@ -127,11 +153,19 @@ agent_behavior() {
   local last_message="$3"
   local main_worktree="$4"
 
+  # RALPH_RUN_ACTIVE=1 is what makes a runner started inside a worker or reviewer refuse to run.
+  if [[ "${RALPH_RUN_ACTIVE:-}" != "1" ]]; then
+    echo 'fake agent: every worker and reviewer call must run with RALPH_RUN_ACTIVE=1' >&2
+    return 13
+  fi
+
   printf '%s\n' "$prompt" >> "$MOCK_PROMPTS_FILE"
 
   if [[ "$prompt" == *"independent fail-close and clean-break policy reviewer"* ]]; then
     printf 'review\n' >> "$MOCK_CALLS_FILE"
     printf '%s\n' "$codex_cwd" >> "$MOCK_REVIEW_CWDS_FILE"
+    # The latest reviewer prompt, byte for byte.
+    printf '%s' "$prompt" > "$MOCK_REVIEW_PROMPT_FILE"
     if [[ "$codex_cwd" == "$main_worktree" ]]; then
       return 8
     fi
@@ -269,29 +303,62 @@ PY
   printf 'worker finished\n' > "$last_message"
 }
 
-# Codex: --cd and --output-last-message; the prompt is the last argument.
+# Codex CLI: the exec subcommand first, the prompt last. Every call must carry --cd DIR,
+# --dangerously-bypass-approvals-and-sandbox and --output-last-message FILE, in any order, and the
+# reviewer call also --ephemeral and --output-schema FILE; nothing else is allowed but an optional
+# --model NAME.
 codex() {
   local last_message=""
   local codex_cwd=""
   local model=""
   local prompt="${*: -1}"
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
+  local subcommand="${1-}"
+  local bypass=0 ephemeral=0 schema_given=0 output_schema="" unexpected=""
+  local -a options=()
+  local index=0
+  [[ "$#" -lt 2 ]] || options=("${@:2:$#-2}")
+  while [[ "$index" -lt "${#options[@]}" ]]; do
+    case "${options[index]}" in
       --cd)
-        codex_cwd="$2"
-        shift 2
+        codex_cwd="${options[index + 1]-}"
+        index=$((index + 1))
+        ;;
+      --dangerously-bypass-approvals-and-sandbox) bypass=1 ;;
+      --ephemeral) ephemeral=1 ;;
+      --output-schema)
+        schema_given=1
+        output_schema="${options[index + 1]-}"
+        index=$((index + 1))
         ;;
       --output-last-message)
-        last_message="$2"
-        shift 2
+        last_message="${options[index + 1]-}"
+        index=$((index + 1))
         ;;
       --model)
-        model="$2"
-        shift 2
+        model="${options[index + 1]-}"
+        index=$((index + 1))
         ;;
-      *) shift ;;
+      *) unexpected+=" ${options[index]}" ;;
     esac
+    index=$((index + 1))
   done
+  if [[ "$(agent_role "$prompt")" == "review" ]]; then
+    if [[ "$ephemeral" -ne 1 || "$schema_given" -ne 1 || ! -f "$output_schema" ]]; then
+      echo 'fake codex: the reviewer call must carry --ephemeral and --output-schema FILE' >&2
+      return 12
+    fi
+  else
+    [[ "$ephemeral" -eq 0 ]] || unexpected+=" --ephemeral"
+    [[ "$schema_given" -eq 0 ]] || unexpected+=" --output-schema $output_schema"
+  fi
+  if [[ "$subcommand" != "exec" || ! -d "$codex_cwd" || "$bypass" -ne 1 \
+    || -z "$last_message" || "$last_message" == -* || -z "$prompt" || "$prompt" == -* \
+    || -n "$unexpected" ]]; then
+    echo "fake codex: expected exec --cd DIR --dangerously-bypass-approvals-and-sandbox" \
+      "[--ephemeral --output-schema FILE] [--model NAME] --output-last-message FILE PROMPT;" \
+      "got: $subcommand ${options[*]} PROMPT" >&2
+    return 12
+  fi
   printf '%s %s\n' "$(agent_role "$prompt")" "${model:--}" >> "$MOCK_MODELS_FILE"
   agent_behavior "$codex_cwd" "$prompt" "$last_message" "$PWD"
 }
@@ -304,25 +371,48 @@ agent_role() {
   fi
 }
 
-# Cursor CLI: --workspace; the prompt is the last argument; stream-json on stdout.
+# Cursor CLI: --workspace; the prompt is the last argument; stream-json on stdout. Every call must
+# carry -p --force --trust --sandbox disabled --workspace DIR --output-format stream-json, in any
+# order, with nothing else before the prompt but an optional --model NAME.
 agent() {
   local workspace=""
   local model=""
   local prompt="${*: -1}"
   local message status
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
+  local print=0 force=0 trust=0 sandbox="" output_format="" unexpected=""
+  local -a options=("${@:1:$#-1}")
+  local index=0
+  while [[ "$index" -lt "${#options[@]}" ]]; do
+    case "${options[index]}" in
+      -p) print=1 ;;
+      --force) force=1 ;;
+      --trust) trust=1 ;;
+      --sandbox)
+        sandbox="${options[index + 1]-}"
+        index=$((index + 1))
+        ;;
       --workspace)
-        workspace="$2"
-        shift 2
+        workspace="${options[index + 1]-}"
+        index=$((index + 1))
+        ;;
+      --output-format)
+        output_format="${options[index + 1]-}"
+        index=$((index + 1))
         ;;
       --model)
-        model="$2"
-        shift 2
+        model="${options[index + 1]-}"
+        index=$((index + 1))
         ;;
-      *) shift ;;
+      *) unexpected+=" ${options[index]}" ;;
     esac
+    index=$((index + 1))
   done
+  if [[ "$print" -ne 1 || "$force" -ne 1 || "$trust" -ne 1 || "$sandbox" != "disabled" \
+    || ! -d "$workspace" || "$output_format" != "stream-json" || -n "$unexpected" ]]; then
+    echo "fake agent: expected -p --force --trust --sandbox disabled --workspace DIR" \
+      "--output-format stream-json [--model NAME] PROMPT; got: ${options[*]} PROMPT" >&2
+    return 12
+  fi
   printf '%s %s\n' "$(agent_role "$prompt")" "${model:--}" >> "$MOCK_MODELS_FILE"
   message="$(command mktemp)"
   agent_behavior "$workspace" "$prompt" "$message" "$PWD"
@@ -336,28 +426,64 @@ agent() {
 }
 
 # Antigravity CLI: runs in the current directory; the prompt directly follows -p; one JSON reply.
+# Every call must carry --dangerously-skip-permissions, --output-format json and -p PROMPT, and the
+# reviewer call also --json-schema FILE; nothing else is allowed but an optional --model NAME.
 agy() {
   local prompt=""
   local model=""
   local message status main_worktree
+  local prompt_given=0 skip_permissions=0 output_format="" schema_given=0 json_schema=""
+  local unexpected=""
+  local -a args=("$@")
+  local index=0
   export MOCK_AGY_ARGS="$*"
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
+  while [[ "$index" -lt "${#args[@]}" ]]; do
+    case "${args[index]}" in
       -p)
-        prompt="$2"
-        shift 2
+        prompt_given=1
+        prompt="${args[index + 1]-}"
+        index=$((index + 1))
         ;;
       --print-timeout)
         echo 'the runner must not pass --print-timeout' >&2
         return 9
         ;;
-      --model)
-        model="$2"
-        shift 2
+      --dangerously-skip-permissions) skip_permissions=1 ;;
+      --output-format)
+        output_format="${args[index + 1]-}"
+        index=$((index + 1))
         ;;
-      *) shift ;;
+      --json-schema)
+        schema_given=1
+        json_schema="${args[index + 1]-}"
+        index=$((index + 1))
+        ;;
+      --model)
+        model="${args[index + 1]-}"
+        index=$((index + 1))
+        ;;
+      *) unexpected+=" ${args[index]}" ;;
     esac
+    index=$((index + 1))
   done
+  # agy reads the argument after -p as the prompt, so an option there would take its place.
+  if [[ "$prompt_given" -ne 1 || -z "$prompt" || "$prompt" == -* ]]; then
+    echo 'fake agy: -p must be immediately followed by the prompt' >&2
+    return 12
+  fi
+  if [[ "$(agent_role "$prompt")" == "review" ]]; then
+    if [[ "$schema_given" -ne 1 || ! -f "$json_schema" ]]; then
+      echo 'fake agy: the reviewer call must carry --json-schema FILE' >&2
+      return 12
+    fi
+  elif [[ "$schema_given" -eq 1 ]]; then
+    unexpected+=" --json-schema $json_schema"
+  fi
+  if [[ "$skip_permissions" -ne 1 || "$output_format" != "json" || -n "$unexpected" ]]; then
+    echo "fake agy: expected --dangerously-skip-permissions --output-format json [--model NAME]" \
+      "-p PROMPT; got: ${args[*]//"$prompt"/PROMPT}" >&2
+    return 12
+  fi
   printf '%s %s\n' "$(agent_role "$prompt")" "${model:--}" >> "$MOCK_MODELS_FILE"
   main_worktree="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
   message="$(command mktemp)"
@@ -432,6 +558,7 @@ export MOCK_MODELS_FILE="$TEST_ROOT/models.txt"
 : > "$MOCK_MODELS_FILE"
 export MOCK_REVIEW_CWDS_FILE="$TEST_ROOT/reviewer-cwds.txt"
 : > "$MOCK_REVIEW_CWDS_FILE"
+export MOCK_REVIEW_PROMPT_FILE="$TEST_ROOT/review-prompt.txt"
 
 make_fixture() {
   local fixture_root="$1"
@@ -520,6 +647,53 @@ if grep -Fq 'Also run "git status --short"' "$MOCK_PROMPTS_FILE"; then
   exit 1
 fi
 git -C "$second_root" log -1 --format=%s | grep -Fq 'feat: US-001 - Test gate'
+# Both reviewers read the staged diff with their agent's command; Cursor's pipes it through cat.
+review_diff_line="Inspect the complete staged snapshot using \"$REVIEW_DIFF_COMMAND\" in this disposable worktree:"
+[[ "$(grep -Fxc -- "$review_diff_line" "$MOCK_PROMPTS_FILE")" -eq 2 ]]
+if [[ "$RALPH_TEST_AGENT" == "codex" ]]; then
+  # The Codex reviewer prompt stays byte for byte what it was before the command became per-agent.
+  golden_worktree="$(tail -1 "$MOCK_REVIEW_CWDS_FILE")"
+  golden_review_prompt=$(cat <<EOF
+You are the independent fail-close and clean-break policy reviewer for one Ralph iteration.
+
+This is a static policy diff review. Do not run builds, tests, linters, coverage commands, package
+managers, or any command that creates or modifies files. Judge only the policy violations listed
+below from the staged diff. The implementation worker and pre-commit hook own test execution.
+
+Inspect the complete staged snapshot using "git diff --cached HEAD" in this disposable worktree:
+$golden_worktree
+
+The runner already verified that the staged snapshot is complete. Do not use the main worktree or
+plain "git diff HEAD"; every newly created file must be reviewed from the cached diff.
+
+The stories under review are: US-001: Test gate. Read their acceptance criteria only to determine
+whether fallback, compatibility, removal, or test behavior is explicitly required or allowed:
+$golden_worktree/scripts/ralph/prd.json
+
+Ignore bookkeeping-only changes under scripts/ralph. Reject only when the diff contains at least
+one of these concrete problems:
+
+1. A newly introduced fallback, guessed default, broad retry, swallowed error, or no-op that turns
+   a required failure into apparent success without explicit acceptance criteria.
+2. A compatibility shim, dual path, retained legacy implementation, migration behavior, or feature
+   flag that is not explicitly required by acceptance criteria.
+3. Obsolete behavior that acceptance criteria require to be removed but remains reachable.
+4. A skipped, weakened, or deleted valid test used to make checks pass.
+
+Do not review general correctness or completeness. Do not reject for an acceptance criterion that
+is unrelated to the four policy checks above, style, optional refactors, or hypothetical
+improvements. Existing compatibility and fallback behavior outside the story's change is not a
+finding. Every finding must cite specific diff evidence such as a file and symbol or changed
+behavior. Return JSON matching the provided schema. Set approved=true with findings=[] only when no
+listed policy problem is present.
+EOF
+)
+  if ! cmp -s <(printf '%s' "$golden_review_prompt") "$MOCK_REVIEW_PROMPT_FILE"; then
+    diff <(printf '%s\n' "$golden_review_prompt") <(cat "$MOCK_REVIEW_PROMPT_FILE"; echo) >&2 || true
+    echo 'the Codex reviewer prompt must stay byte-identical' >&2
+    exit 1
+  fi
+fi
 
 review_artifact_root="$TEST_ROOT/review-artifact"
 make_fixture "$review_artifact_root"
@@ -972,9 +1146,40 @@ missing_protocol_status=$?
 set -e
 [[ "$missing_protocol_status" -eq 1 ]]
 grep -Fq 'Ralph policy gate files are missing' <<< "$missing_protocol_output"
+# The shared loop names the skill of the runner that sourced it.
+grep -Fxq "error: Ralph policy gate files are missing; $REINSTALL_HINT" <<< "$missing_protocol_output"
 grep -Fq 'missing: ' <<< "$missing_protocol_output"
 grep -Fq 'assets/worker-protocol.md' <<< "$missing_protocol_output"
 [[ ! -s "$MOCK_CALLS_FILE" ]]
+
+if [[ "$RALPH_TEST_AGENT" != "codex" ]]; then
+  # Without the reviewed-tree schema the Cursor and Antigravity runners stop before any agent call
+  # as well, naming their own skill and the missing file.
+  missing_schema_root="$TEST_ROOT/missing-schema"
+  make_fixture "$missing_schema_root"
+  cp -R "$TEST_ROOT/skill" "$TEST_ROOT/skill-without-schema"
+  missing_schema="$TEST_ROOT/skill-without-schema/assets/policy-review-reviewed-tree.schema.json"
+  rm "$missing_schema"
+  export MOCK_MODE="approve"
+  export MOCK_CALLS_FILE="$TEST_ROOT/missing-schema-calls.txt"
+  export MOCK_PROMPTS_FILE="$TEST_ROOT/missing-schema-prompts.txt"
+  : > "$MOCK_CALLS_FILE"
+  : > "$MOCK_PROMPTS_FILE"
+  set +e
+  missing_schema_output="$(cd "$missing_schema_root" \
+    && bash "$TEST_ROOT/skill-without-schema/scripts/$RUNNER_NAME" 1 2>&1)"
+  missing_schema_status=$?
+  set -e
+  [[ "$missing_schema_status" -eq 1 ]]
+  grep -Fxq "error: Ralph policy gate files are missing; $REINSTALL_HINT" <<< "$missing_schema_output"
+  # Exactly one file is reported missing, and it is the schema.
+  missing_schema_reported="$(grep '^missing: ' <<< "$missing_schema_output")"
+  [[ "$(realpath -m "${missing_schema_reported#missing: }")" == "$(realpath -m "$missing_schema")" ]]
+  [[ ! -s "$MOCK_CALLS_FILE" ]]
+  [[ ! -s "$MOCK_PROMPTS_FILE" ]]
+  # No iteration started, so there is no agent log either.
+  [[ -z "$(ls -A "$missing_schema_root/scripts/ralph/logs")" ]]
+fi
 
 set +e
 nested_output="$(cd "$reject_root" && RALPH_RUN_ACTIVE=1 bash "$RUNNER" 3 2>&1)"
@@ -1105,10 +1310,25 @@ run_failing_scenario() {
   set -e
 }
 
+# assert_review_blocked MESSAGE: after its one review the scenario's run exited 1 with MESSAGE,
+# committed nothing and left the story pending.
+assert_review_blocked() {
+  [[ "$scenario_status" -eq 1 ]]
+  grep -Fq "$1" <<< "$scenario_output"
+  [[ "$(grep -c '^review$' "$MOCK_CALLS_FILE")" -eq 1 ]]
+  [[ "$(git -C "$scenario_root" rev-list --count HEAD)" -eq 1 ]]
+  grep -Fq '"passes": false' "$scenario_root/scripts/ralph/prd.json"
+  grep -Fq 'POLICY GATE FAILED' "$scenario_root/scripts/ralph/progress.txt"
+}
+
 if [[ "$RALPH_TEST_AGENT" != "codex" ]]; then
-  # The reviewer must prove it read the staged diff by reporting the staged tree.
+  # The reviewer must report the staged tree, which shows it ran commands in that snapshot.
   grep -Fq 'git write-tree' "$TEST_ROOT/second-prompts.txt"
   grep -Fq 'reviewed_tree' "$TEST_ROOT/second-prompts.txt"
+  if [[ "$RALPH_TEST_AGENT" == "cursor" ]]; then
+    # Claude Code's RTK hook, which Cursor also runs, would cut a plain git diff.
+    grep -Fq 'git diff --cached HEAD | cat' "$TEST_ROOT/second-prompts.txt"
+  fi
   run_failing_scenario review-wrong-tree review-wrong-tree 1
   [[ "$scenario_status" -eq 1 ]]
   grep -Fq 'invalid policy review output' <<< "$scenario_output"
@@ -1135,6 +1355,16 @@ if [[ "$RALPH_TEST_AGENT" == "cursor" ]]; then
   [[ "$scenario_status" -eq 1 ]]
   grep -Fq "$AGENT_FAILURE" <<< "$scenario_output"
   cmp "$TEST_ROOT/cursor-unsuccessful-before.json" "$scenario_root/scripts/ralph/prd.json"
+  # The same holds for the reviewer: an unsuccessful result event voids its approval.
+  run_failing_scenario cursor-review-unsuccessful cursor-review-unsuccessful 1
+  assert_review_blocked 'policy review failed in iteration 1 with status 1'
+  grep -rFq 'Cursor did not finish successfully' "$scenario_root/scripts/ralph/logs"
+  # An approval inside prose, bare or fenced, is not exactly one JSON object.
+  for mode in cursor-review-prose cursor-review-prose-fenced; do
+    run_failing_scenario "$mode" "$mode" 1
+    assert_review_blocked 'invalid policy review output in iteration 1'
+    grep -rFq 'did not reply with exactly one JSON object' "$scenario_root/scripts/ralph/logs"
+  done
 fi
 
 if [[ "$RALPH_TEST_AGENT" == "antigravity" ]]; then
@@ -1146,6 +1376,35 @@ if [[ "$RALPH_TEST_AGENT" == "antigravity" ]]; then
     cmp "$TEST_ROOT/$mode-before.json" "$scenario_root/scripts/ralph/prd.json"
   done
   grep -rFq 'auto-denied' "$TEST_ROOT/agy-auto-denied/scripts/ralph/logs"
+  # The reviewer's own stderr is checked as well: an auto-denied tool voids a well-formed approval.
+  run_failing_scenario agy-review-auto-denied agy-review-auto-denied 1
+  assert_review_blocked 'policy review failed in iteration 1 with status 1'
+  grep -rFq 'Antigravity auto-denied a tool in headless mode' "$scenario_root/scripts/ralph/logs"
+  # Only structured output is the review; an approval in the response text alone is not.
+  run_failing_scenario agy-review-no-structured-output agy-review-no-structured-output 1
+  assert_review_blocked 'invalid policy review output in iteration 1'
+  grep -rFq 'the reviewer returned no structured output' "$scenario_root/scripts/ralph/logs"
+  # A reply that lists denied actions fails the call although its status is SUCCESS and stderr
+  # reports no auto-denied tool: first for the worker, then for the reviewer's approval.
+  run_failing_scenario agy-denied-actions agy-denied-actions 1
+  [[ "$scenario_status" -eq 1 ]]
+  grep -Fq "$AGENT_FAILURE" <<< "$scenario_output"
+  cmp "$TEST_ROOT/agy-denied-actions-before.json" "$scenario_root/scripts/ralph/prd.json"
+  grep -Fq '"passes": false' "$scenario_root/scripts/ralph/prd.json"
+  [[ "$(git -C "$scenario_root" rev-list --count HEAD)" -eq 1 ]]
+  [[ "$(grep -c '^review$' "$MOCK_CALLS_FILE" || true)" -eq 0 ]]
+  grep -Fq '"status": "SUCCESS"' "$scenario_root/scripts/ralph/logs/antigravity-iteration-1-reply.json"
+  run_failing_scenario agy-review-denied-actions agy-review-denied-actions 1
+  assert_review_blocked 'policy review failed in iteration 1 with status 1'
+  grep -Fq '"status": "SUCCESS"' \
+    "$scenario_root/scripts/ralph/logs/antigravity-iteration-1-policy-review-reply.json"
+  for mode in agy-denied-actions agy-review-denied-actions; do
+    grep -rFq 'Antigravity denied tools in headless mode' "$TEST_ROOT/$mode/scripts/ralph/logs"
+    if grep -rFq 'auto-denied' "$TEST_ROOT/$mode/scripts/ralph/logs"; then
+      echo "$mode: denied_actions alone must fail the call, with no auto-denied tool on stderr" >&2
+      exit 1
+    fi
+  done
 fi
 
 printf 'PASS (%s): runner-owned worker protocol, policy rejection/repair, budget-bounded continuation, sanitized prd.json, dirty tree absorption, failure rollback, commit gate, recursion guard, and lock release.\n' "$RALPH_TEST_AGENT"

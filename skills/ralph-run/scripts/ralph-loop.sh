@@ -1,6 +1,8 @@
 # Shared Ralph loop, sourced by an agent entry point (ralph-run-<agent>.sh) that defines:
-#   RALPH_RUNNER_NAME, RALPH_AGENT_LOG_PREFIX, RALPH_AGENT_EXEC_LABEL, RALPH_WORKER_RESTRICTION,
-#   RALPH_REVIEW_EXTRA (appended to the reviewer prompt; empty adds nothing), SCRIPT_DIR,
+#   RALPH_RUNNER_NAME, RALPH_SKILL_LABEL (the skill named in reinstall messages),
+#   RALPH_AGENT_LOG_PREFIX, RALPH_AGENT_EXEC_LABEL, RALPH_WORKER_RESTRICTION,
+#   RALPH_REVIEW_EXTRA (appended to the reviewer prompt; empty adds nothing),
+#   RALPH_REVIEW_DIFF_COMMAND (the command the reviewer reads the staged diff with), SCRIPT_DIR,
 #   ralph_resolve_agent                                   sets the agent executable or exits,
 #   ralph_worker ROOT PROMPT LOG LAST_MESSAGE             leaves the final message in LAST_MESSAGE,
 #   ralph_reviewer WORKTREE PROMPT LOG REVIEW_FILE TREE   leaves {approved, findings} JSON in
@@ -161,7 +163,7 @@ if ! git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; the
 fi
 
 if [[ ! -f "$STATE_TOOL" || ! -f "$REVIEW_SCHEMA" || ! -s "$WORKER_PROTOCOL" ]]; then
-  echo "error: Ralph policy gate files are missing; reinstall the ralph-run skill" >&2
+  echo "error: Ralph policy gate files are missing; reinstall the $RALPH_SKILL_LABEL skill" >&2
   [[ -f "$STATE_TOOL" ]] || echo "missing: $STATE_TOOL" >&2
   [[ -f "$REVIEW_SCHEMA" ]] || echo "missing: $REVIEW_SCHEMA" >&2
   [[ -s "$WORKER_PROTOCOL" ]] || echo "missing: $WORKER_PROTOCOL" >&2
@@ -400,7 +402,7 @@ This is a static policy diff review. Do not run builds, tests, linters, coverage
 managers, or any command that creates or modifies files. Judge only the policy violations listed
 below from the staged diff. The implementation worker and pre-commit hook own test execution.
 
-Inspect the complete staged snapshot using "git diff --cached HEAD" in this disposable worktree:
+Inspect the complete staged snapshot using "$RALPH_REVIEW_DIFF_COMMAND" in this disposable worktree:
 $review_worktree
 
 The runner already verified that the staged snapshot is complete. Do not use the main worktree or

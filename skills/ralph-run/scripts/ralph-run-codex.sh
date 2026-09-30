@@ -4,10 +4,12 @@ set -euo pipefail
 # Codex entry point for the shared Ralph loop (ralph-loop.sh). The loop owns argument handling,
 # the policy gate and the exact-tree commit; this file says only how Codex is run.
 RALPH_RUNNER_NAME="ralph-run-codex.sh"
+RALPH_SKILL_LABEL="ralph-run"
 RALPH_AGENT_LOG_PREFIX="codex"
 RALPH_AGENT_EXEC_LABEL="codex exec"
 RALPH_WORKER_RESTRICTION="Do not invoke the ralph-run skill, do not run ralph-run-codex.sh, and do not launch another codex exec or autonomous loop."
 RALPH_REVIEW_EXTRA=""
+RALPH_REVIEW_DIFF_COMMAND="git diff --cached HEAD"
 
 ralph_resolve_agent() {
   CODEX_BIN="$(python3 "$SCRIPT_DIR/ralph_runtime.py")"

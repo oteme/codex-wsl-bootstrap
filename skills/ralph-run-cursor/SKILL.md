@@ -21,7 +21,7 @@ skills just to run the loop. The runner reads them as-is.
   With no number (or `0`), the runner sets the budget to twice the number of pending stories, at
   least 10, and prints it. The run ends when every story passes or the budget is used up; nothing
   else ends it except a hard error (a failed or unsuccessful `agent -p`, an empty worker reply, a
-  worker commit, a reviewer that cannot run or does not prove it read the staged diff). An iteration
+  worker commit, a reviewer that cannot run or does not report the staged tree). An iteration
   that completes no story, or whose story the reviewer rejects, leaves its work in the working tree
   and the next iteration continues from it.
 - Ralph directory: `<project-root>/scripts/ralph` by default. Run from the project root.
@@ -32,8 +32,10 @@ skills just to run the loop. The runner reads them as-is.
   launcher. Each role uses the run value, then the saved value; the reviewer then falls back to the
   worker's model; with no model anywhere Cursor uses its default model (`agent models` shows it).
   The launcher checks both names against `agent models` and refuses to start with a model Cursor
-  does not list. When the user asks to change the saved Ralph model, edit the settings file with the
-  exact names the CLI lists; an invalid file stops every run until fixed.
+  does not list. A parameterized name such as `claude-opus-4-8[effort=high]` is not in that list;
+  the launcher passes it through, and Cursor rejects an invalid one in the first iteration. When the
+  user asks to change the saved Ralph model, edit the settings file with the exact names the CLI
+  lists; an invalid file stops every run until fixed. An empty run model is refused.
 
 ## Workflow
 
@@ -42,7 +44,10 @@ skills just to run the loop. The runner reads them as-is.
    missing, use `ralph-bootstrap` first. If only `prd.json` is missing, tell the user to create a PRD
    with `/prd`, then convert it with `/ralph`.
 3. Require `CURSOR_CONVERSATION_ID` in your shell environment (Cursor sets it for agent commands).
-   It must be a UUID. If it is missing, stop before starting work; do not substitute another ID.
+   The ID must be a UUID. If it is missing, stop before starting work; do not substitute another ID.
+   The result is delivered by resuming this conversation in the project's git top level, so it
+   reaches this conversation only when this Cursor session was started there; otherwise delivery
+   records `notification=failed` and the result stays in the result file.
    Setup records its verified Cursor CLI's absolute path in `scripts/cursor-runtime.json`; the
    supervisor, workers, reviewer and result delivery use that executable. If the record or executable
    is missing or invalid, stop and rerun `Downloads/setup-wsl.cmd`.
@@ -67,14 +72,22 @@ skills just to run the loop. The runner reads them as-is.
    `failed` and `interrupted` are not success. Do not launch another run automatically.
 
 The durable result separates work status from delivery status. Cursor has no message queue, so the
-supervisor delivers the result by resuming this conversation once with a headless turn
-(`agent -p --resume=<conversation>`, no `--force`). `notification=delivered` means Cursor ran that
-turn in this same conversation; if you have this conversation open in an interactive session, the
-turn appears when the conversation is reloaded. Cursor silently starts a new conversation for an
-unknown ID, so delivery counts only when Cursor reports this conversation back; otherwise the
-supervisor records `notification=failed` with `notification_error` and does not retry. If asked for
-status, run `python3 <skill-dir>/scripts/ralph-notify.py --status <result-file>`; it reports
-`monitoring_lost` for a dead supervisor. Never start a second run to recover a notification.
+supervisor delivers the result by resuming this conversation once with a headless turn (`agent -p
+--resume=<conversation>`, no `--force`), no earlier than a minute after the run started, so that it
+cannot collide with the turn that started Ralph. `notification=delivered` means Cursor ran that turn
+in this same conversation; if you have this conversation open in an interactive session, the turn
+appears when the conversation is reloaded. Cursor silently starts a new conversation for an unknown
+ID, so delivery counts only when Cursor reports this conversation back; otherwise the supervisor
+records `notification=failed` with `notification_error` and does not retry. If asked for status, run
+`python3 <skill-dir>/scripts/ralph-notify.py --status <result-file>`; it reports `monitoring_lost`
+for a dead supervisor, and `notification=lost` when the supervisor stopped after the
+run but before it delivered the result. Never start a second run to recover a notification.
+
+To stop a run, send one SIGTERM to the `supervisor_pid` recorded in the result file; the
+supervisor stops the runner and every agent it started, then delivers an `interrupted` result.
+Never signal `runner_pid` or an agent process directly: the agent would keep changing the working
+tree after the repository lock is released. A second signal cancels the pending delivery, and
+`--status` then reports `notification=lost`.
 
 ## Execution Notes
 
@@ -91,8 +104,10 @@ status, run `python3 <skill-dir>/scripts/ralph-notify.py --status <result-file>`
 - Cursor has no output schema option, so the reviewer receives the review JSON Schema in its prompt
   and must reply with exactly one JSON object (bare, or as the only fenced block). It must also run
   `git write-tree` in the review worktree and report the result as `reviewed_tree`; a reply without
-  the exact staged tree is invalid output, so a reviewer that could not read the diff cannot approve
-  it.
+  the exact staged tree is invalid output, so a reviewer that could not run commands in the review
+  worktree cannot approve it. The reviewer is told to read the diff as `git diff --cached HEAD |
+  cat`, because the Claude Code RTK hook that Cursor also runs cuts a plain `git diff` to 100 lines
+  per file.
 - The runner keeps only story `passes` and `notes` changes from the worker's `prd.json`, reviews the
   exact staged snapshot, and commits only the approved tree. Completion is derived from validated
   `prd.json` state, never from a worker's self-reported message.

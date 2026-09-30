@@ -63,4 +63,38 @@ FAKE_STATUS_JSON='{"status":"ERROR","error":"authentication failed or timed out"
 FAKE_STATUS_JSON='not json' expect_failure antigravity_logged_in
 FAKE_STATUS_JSON='{"status":"SUCCESS"}' FAKE_STATUS=1 expect_failure antigravity_logged_in
 
+# AGENT_SIGN_IN_TIMEOUT bounds both sign-in probes: a CLI that does not answer in time counts as
+# signed out, even when it would report a session later.
+[[ "$AGENT_SIGN_IN_TIMEOUT" == 30 ]]
+AGENT_SIGN_IN_TIMEOUT=1
+mkdir -p "$TEST_ROOT/hanging-bin"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  '[[ "$*" == "status --format json" ]] || exit 90' \
+  'sleep 60' \
+  'printf "%s\n" "{\"isAuthenticated\":true}"' > "$TEST_ROOT/hanging-bin/agent"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  '[[ "$*" == "-p /usage --output-format json" ]] || exit 90' \
+  'sleep 60' \
+  'printf "%s\n" "{\"status\":\"SUCCESS\"}"' > "$TEST_ROOT/hanging-bin/agy"
+chmod 0755 "$TEST_ROOT/hanging-bin/agent" "$TEST_ROOT/hanging-bin/agy"
+# Milliseconds since boot, with centisecond resolution. Unlike the wall clock, which WSL steps back
+# by seconds, it only moves forward.
+uptime_ms() {
+  local uptime
+  read -r uptime _ < /proc/uptime
+  printf '%s\n' "$(( 10#${uptime/./} * 10 ))"
+}
+for probe in cursor_logged_in antigravity_logged_in; do
+  started="$(uptime_ms)"
+  PATH="$TEST_ROOT/hanging-bin:$PATH" expect_failure "$probe"
+  elapsed_ms=$(( $(uptime_ms) - started ))
+  # At least the timeout (the probe reached the hanging CLI), and well under the CLI's 60 s.
+  if (( elapsed_ms < 900 || elapsed_ms > 5000 )); then
+    echo "$probe took ${elapsed_ms} ms with AGENT_SIGN_IN_TIMEOUT=1" >&2
+    exit 1
+  fi
+done
+
 printf '%s\n' 'PASS: agent CLI version parsing, minimum versions, and sign-in checks.'

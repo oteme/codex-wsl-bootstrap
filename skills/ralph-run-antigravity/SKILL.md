@@ -21,8 +21,8 @@ skills just to run the loop. The runner reads them as-is.
   number (or `0`), the runner sets the budget to twice the number of pending stories, at least 10,
   and prints it. The run ends when every story passes or the budget is used up; nothing else ends it
   except a hard error (a failed or unsuccessful `agy -p`, a tool auto-denied in headless mode, an
-  empty worker reply, a worker commit, a reviewer that cannot run or does not prove it read the
-  staged diff). An iteration that completes no story, or whose story the reviewer rejects, leaves
+  empty worker reply, a worker commit, a reviewer that cannot run or does not report the staged
+  tree). An iteration that completes no story, or whose story the reviewer rejects, leaves
   its work in the working tree and the next iteration continues from it.
 - Ralph directory: `<project-root>/scripts/ralph` by default. Run from the project root.
 - Models: optional, separate from the model you use interactively. Saved Ralph defaults live in
@@ -68,22 +68,31 @@ skills just to run the loop. The runner reads them as-is.
    `failed` and `interrupted` are not success. Do not launch another run automatically.
 
 The durable result separates work status from delivery status. agy has no message queue, so the
-supervisor delivers the result by resuming this conversation once with a headless turn
-(`agy --conversation <id> -p ...`, without automatic approvals). `notification=delivered` means agy
-ran that turn in this same conversation; if you have this conversation open in an interactive
+supervisor delivers the result by resuming this conversation once with a headless turn (`agy
+--conversation <id> -p ...`, without automatic approvals), no earlier than a minute after the run
+started, so that it cannot collide with the turn that started Ralph. `notification=delivered` means
+agy ran that turn in this same conversation; if you have this conversation open in an interactive
 session, the turn appears when the conversation is reloaded. agy silently starts a new conversation
 for an unknown ID, so delivery counts only when agy reports this conversation back; otherwise the
 supervisor records `notification=failed` with `notification_error` and does not retry. If asked for
 status, run `python3 <skill-dir>/scripts/ralph-notify.py --status <result-file>`; it reports
-`monitoring_lost` for a dead supervisor. Never start a second run to recover a notification.
+`monitoring_lost` for a dead supervisor, and `notification=lost` when the supervisor stopped after the
+run but before it delivered the result. Never start a second run to recover a notification.
+
+To stop a run, send one SIGTERM to the `supervisor_pid` recorded in the result file; the
+supervisor stops the runner and every agent it started, then delivers an `interrupted` result.
+Never signal `runner_pid` or an agent process directly: the agent would keep changing the working
+tree after the repository lock is released. A second signal cancels the pending delivery, and
+`--status` then reports `notification=lost`.
 
 ## Execution Notes
 
 - Workers and the reviewer run as `agy --dangerously-skip-permissions`, the unattended equivalent
   of the Codex loop. The reviewer runs in a disposable detached Git worktree populated from the exact
   staged review tree. Only run it in a trusted repository.
-- agy exits 0 even when headless mode auto-denies a tool, so a run whose stderr reports an
-  auto-denied tool, or whose JSON status is not `SUCCESS`, is a hard error.
+- agy exits 0 even when headless mode auto-denies a tool, so a run whose JSON reply lists
+  `denied_actions`, whose stderr reports an auto-denied tool, or whose JSON status is not `SUCCESS`,
+  is a hard error.
 - Iterations are serial by design. Do not parallelize them.
 - Each worker prompt contains the worker protocol from `assets/worker-protocol.md`; where the
   project's `CLAUDE.md`, the PRD or `prd.json` conflicts with it about when to stop or when a story
@@ -91,7 +100,8 @@ status, run `python3 <skill-dir>/scripts/ralph-notify.py --status <result-file>`
   agent run or loop, and must not commit.
 - The reviewer's output is constrained with `--json-schema`. It must run `git write-tree` in the
   review worktree and report the result as `reviewed_tree`; a reply without the exact staged tree is
-  invalid output, so a reviewer that could not read the diff cannot approve it.
+  invalid output, so a reviewer that could not run commands in the review worktree cannot approve
+  it.
 - The runner keeps only story `passes` and `notes` changes from the worker's `prd.json`, reviews the
   exact staged snapshot, and commits only the approved tree. Completion is derived from validated
   `prd.json` state, never from a worker's self-reported message.

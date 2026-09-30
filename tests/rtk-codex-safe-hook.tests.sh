@@ -13,7 +13,7 @@ set -euo pipefail
 [[ "${1:-}" == hook && "${2:-}" == check ]]
 case "${3:-}" in
   'go test ./...') printf 'rtk go test ./...\n' ;;
-  'npm test' | 'bun test' | 'yarn lint' | 'pnpm test' | 'tail -f app.log' | '  npm test -- --grep "a b"  ')
+  'npm test' | 'bun test' | 'yarn lint' | 'pnpm test' | 'npm test -- --grep "a b"')
     # Like RTK 0.46: no rewrite is reported with the verbatim command on stderr and exit code 1.
     printf 'No rewrite for: %s\n' "${3:-}" >&2
     exit 1
@@ -56,7 +56,7 @@ payload() {
 assert_empty() {
   local command="$1"
   local output
-  output="$(payload "$command" | RTK_BIN="$fake_rtk" python3 "$TEST_ROOT/hook.py")"
+  output="$(payload "$command" | RTK_BIN="${2:-$fake_rtk}" python3 "$TEST_ROOT/hook.py")"
   [[ -z "$output" ]] || {
     echo "unexpected hook output for: $command" >&2
     exit 1
@@ -100,9 +100,15 @@ assert_empty 'npx prettier --write example.js'
 assert_empty 'git push origin main'
 assert_empty 'go env'
 assert_empty 'unknown-command argument'
+# RTK would shorten these diffs to 100 lines per file, so the hook leaves them unchanged.
+assert_empty 'git diff --cached HEAD'
+assert_empty 'git show HEAD'
+# go test is allowlisted, so only the mutating-option guard keeps these unchanged.
+assert_empty 'go test --output=marker ./...'
+assert_empty 'go test --output marker ./...'
 
 # RTK has no rewrite for these allowlisted commands; they must run unchanged, not be denied.
-for command in 'npm test' 'bun test' 'yarn lint' 'pnpm test' 'tail -f app.log' '  npm test -- --grep "a b"  '; do
+for command in 'npm test' 'bun test' 'yarn lint' 'pnpm test' 'npm test -- --grep "a b"'; do
   assert_empty "$command"
 done
 
@@ -113,6 +119,8 @@ assert_denied_json '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_inp
 assert_denied_json '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":7}}' 'without a string command'
 assert_denied_json '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":""}}' 'empty or invalid Bash command'
 assert_denied_json '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"if then"}}' 'empty or invalid Bash command'
+# bash -n drops a NUL byte, so it would check another command than the one given.
+assert_denied_json '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls\u0000 -la"}}' 'empty or invalid Bash command'
 
 oversized_output="$(python3 -c 'print("x" * (1024 * 1024 + 1), end="")' | python3 "$TEST_ROOT/hook.py")"
 python3 -c '
@@ -121,6 +129,24 @@ data = json.load(sys.stdin)["hookSpecificOutput"]
 assert data["permissionDecision"] == "deny"
 assert "oversized" in data["permissionDecisionReason"]
 ' <<< "$oversized_output"
+
+# long_payload PREFIX SUFFIX: a Bash call whose command is PREFIX, 140,000 a's and SUFFIX, longer
+# than the 128 KiB one argument may hold. bash -n reads it on stdin, so it is still checked; RTK
+# takes it only as an argument, so an allowlisted one runs unchanged, not denied.
+long_payload() {
+  python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":sys.argv[1] + "a" * 140000 + sys.argv[2]}}))' "$1" "$2"
+}
+assert_long_unchanged() {
+  local output
+  output="$(long_payload "$1" "$2" | RTK_BIN="$fake_rtk" python3 "$TEST_ROOT/hook.py")"
+  [[ -z "$output" ]] || {
+    echo "a command longer than 128 KiB did not run unchanged: $1...: $output" >&2
+    exit 1
+  }
+}
+assert_long_unchanged 'ls ' ''
+assert_long_unchanged $'cat > notes.txt <<\'EOF\'\n' $'\nEOF'
+assert_denied_json "$(long_payload 'echo ' ' )')" 'empty or invalid Bash command'
 
 failing_rtk="$TEST_ROOT/failing-rtk"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 9' > "$failing_rtk"
@@ -135,6 +161,21 @@ data = json.load(sys.stdin)["hookSpecificOutput"]
 assert data["permissionDecision"] == "deny"
 assert "exit code 9" in data["permissionDecisionReason"]
 ' <<< "$failure_output"
+
+# A failing RTK proves these commands stay unchanged without RTK being consulted. head and tail are
+# not rewritten, since RTK printed a single line for `head -2`.
+for command in 'head -2 notes.txt' 'head -n 3 notes.txt' 'tail -n 5 app.log' 'tail -f app.log'; do
+  assert_empty "$command" "$failing_rtk"
+done
+# Nor is git log, since RTK cut a log to 10 commits without saying so.
+for command in 'git log' 'git log --oneline -30' 'git log main~20..main'; do
+  assert_empty "$command" "$failing_rtk"
+done
+# RTK misread other spacing (`head  -n 3` read the whole file), so only single-spaced commands are
+# rewritten; 'ls -la' above still is.
+for command in 'ls  -la' 'git  status' ' ls -la' 'ls -la ' $'ls\t-la' '  npm test -- --grep "a b"  '; do
+  assert_empty "$command" "$failing_rtk"
+done
 
 missing_output="$(payload 'go test ./...' | RTK_BIN="$TEST_ROOT/missing-rtk" python3 "$TEST_ROOT/hook.py")"
 python3 -c '
@@ -177,7 +218,7 @@ chmod 0755 "$fixed_rtk"
 
 # assert_fixed_rtk EXPECTED COMMAND STDOUT STDERR STATUS: only exit 1 with empty stdout and a
 # last stderr line that is the exact report for COMMAND, after nothing but "[rtk] " lines,
-# means "no rewrite"; any other result must be denied.
+# means "no rewrite"; any other non-zero result must be denied.
 assert_fixed_rtk() {
   local expected="$1"
   local output

@@ -82,11 +82,18 @@ The durable result separates work status from notification status. `notification
 Codex accepted the message, not that the user read it. If queuing fails or times out, the supervisor
 records `notification=failed` and diagnostics in `notification.log`; it does not retry, switch
 servers, or claim delivery. If asked for status, run `python3 <skill-dir>/scripts/ralph-notify.py --status <result-file>`;
-it checks the recorded process identity and reports `monitoring_lost` for a dead supervisor.
+it checks the recorded process identity and reports `monitoring_lost` for a dead supervisor, and
+`notification=lost` when the supervisor stopped after the run but before it queued the result.
 The raw file's `starting`/`running`
 is only a last-recorded state, not proof of a live process. An OS/WSL shutdown or forced supervisor
 kill can prevent notification entirely. Report monitoring loss if the supervisor has disappeared;
 do not infer completion or automatically restart. The run directory is the recovery evidence.
+
+To stop a run, send one SIGTERM to the `supervisor_pid` recorded in the result file; the
+supervisor stops the runner and every agent it started, then queues an `interrupted` result.
+Never signal `runner_pid` or an agent process directly: the agent would keep changing the working
+tree after the repository lock is released. A second signal cancels the pending notification, and
+`--status` then reports `notification=lost`.
 
 ## Execution Notes
 

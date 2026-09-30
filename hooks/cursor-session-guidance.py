@@ -7,12 +7,9 @@ exit code 1 instead of being replaced with default text.
 
 from __future__ import annotations
 
-import sys
-
-sys.dont_write_bytecode = True
-
 import json
 from pathlib import Path
+import sys
 
 
 MAX_INPUT_BYTES = 1024 * 1024

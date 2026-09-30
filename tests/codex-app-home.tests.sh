@@ -122,6 +122,46 @@ set -e
 grep -Fq 'refusing to overwrite unmanaged hook directory' <<< "$unmanaged_hook_output"
 rm -rf "$app_fixture/hooks"
 
+# The App's AGENTS.md is checked before any change as well: managed-block markers that do not pair up
+# and a symlink are refused, and the App home, and what a symlink points to, are left as they were.
+app_agents="$app_fixture/AGENTS.md"
+app_user="$TEST_ROOT/app-user"
+mkdir -p "$app_user"
+app_state() {
+  find "$app_fixture" "$app_user" -printf '%y %p %l\n' | sort
+  find "$app_fixture" "$app_user" -type f -exec cksum {} + | sort
+}
+# expect_app_agents_refusal EXPECTED: the App preflight exits 1 with EXPECTED and changes nothing.
+expect_app_agents_refusal() {
+  local expected="$1" before output status
+  before="$(app_state)"
+  set +e
+  output="$(CODEX_APP_HOME="$valid_app_home" prepare_codex_app_environment; preflight_codex_app_environment 2>&1)"
+  status=$?
+  set -e
+  if [[ "$status" -ne 1 ]] || ! grep -Fq -- "$expected" <<< "$output"; then
+    printf 'App preflight exited %s without reporting: %s\n%s\n' "$status" "$expected" "$output" >&2
+    exit 1
+  fi
+  [[ "$(app_state)" == "$before" ]] || { echo "App preflight changed the App home: $expected" >&2; exit 1; }
+}
+app_unpaired="refusing to update $app_agents: its codex-workstation-bootstrap BEGIN and END markers do not pair up"
+printf '%s\n' 'user notes' '<!-- BEGIN codex-workstation-bootstrap -->' 'old guidance' > "$app_agents"
+expect_app_agents_refusal "$app_unpaired"
+printf '%s\n' 'user notes' '<!-- END codex-workstation-bootstrap -->' > "$app_agents"
+expect_app_agents_refusal "$app_unpaired"
+rm "$app_agents"
+printf 'user notes\n' > "$app_user/AGENTS.md"
+ln -s "$app_user/AGENTS.md" "$app_agents"
+expect_app_agents_refusal "refusing to replace non-regular AGENTS.md: $app_agents"
+rm "$app_agents"
+# A managed block that pairs up passes.
+printf '%s\n' 'user notes' '<!-- BEGIN codex-workstation-bootstrap -->' 'old guidance' \
+  '<!-- END codex-workstation-bootstrap -->' > "$app_agents"
+CODEX_APP_HOME="$valid_app_home" prepare_codex_app_environment
+preflight_codex_app_environment
+rm "$app_agents"
+
 printf '[desktop]\nrunCodexInWindowsSubsystemForLinux = false\n' > "$app_fixture/config.toml"
 set +e
 wsl_mode_output="$(CODEX_APP_HOME="$valid_app_home" prepare_codex_app_environment 2>&1)"

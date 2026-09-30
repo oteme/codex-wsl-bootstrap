@@ -86,7 +86,6 @@ check_codex_home() {
 
   local rtk_hook_dir="$codex_dir/hooks/rtk-safe"
   check_file "$rtk_hook_dir/rtk-codex-safe-hook.py" "${label}Codex RTK Safe Hook"
-  check_file "$rtk_hook_dir/test.sh" "${label}Codex RTK Safe Hook regression test"
   check_file "$rtk_hook_dir/rtk-version" "${label}Codex RTK pinned version"
   check_text "$codex_dir/hooks.json" 'rtk-codex-safe-hook.py' "${label}Codex RTK PreToolUse registration"
 
@@ -103,15 +102,7 @@ check_codex_home() {
 
   check_ralph_models codex "$label" "$codex_dir"
 
-  if [[ -x "$rtk_hook_dir/test.sh" ]]; then
-    local rtk_regression_output
-    if rtk_regression_output="$("$rtk_hook_dir/test.sh" 2>&1)"; then
-      pass "${label}Codex RTK Safe Hook regression"
-    else
-      fail "${label}Codex RTK Safe Hook regression failed"
-      [[ -n "$rtk_regression_output" ]] && printf '%s\n' "$rtk_regression_output" >&2
-    fi
-  fi
+  check_hook_regression "$rtk_hook_dir/test.sh" "${label}Codex RTK Safe Hook regression"
 }
 
 check_agent_version() {
@@ -130,13 +121,26 @@ check_hook_regression() {
   local test_script="$1"
   local label="$2"
   local output
-  if [[ ! -x "$test_script" ]]; then
+  if [[ ! -e "$test_script" ]]; then
     fail "$label missing: $test_script"
+  elif [[ ! -x "$test_script" ]]; then
+    fail "$label not executable: $test_script"
   elif output="$("$test_script" 2>&1)"; then
     pass "$label"
   else
     fail "$label failed"
     [[ -n "$output" ]] && printf '%s\n' "$output" >&2
+  fi
+}
+
+# check_hook_registration LABEL COMMAND...: COMMAND is an installer run with --verify.
+check_hook_registration() {
+  local label="$1" output
+  shift
+  if output="$("$@" 2>&1)"; then
+    pass "$label hook registrations"
+  else
+    fail "$label hook registrations: ${output#error: }"
   fi
 }
 
@@ -190,8 +194,8 @@ check_cursor_home() {
   check_file "$managed/rtk-cursor-safe-hook.py" "Cursor RTK Safe Hook"
   check_file "$managed/rtk-codex-safe-hook.py" "Cursor RTK Safe Hook rules"
   check_text "$managed/guidance.md" '<!-- BEGIN codex-workstation-bootstrap -->' "Cursor shared guidance"
-  check_text "$cursor_dir/hooks.json" "$managed/rtk-cursor-safe-hook.py" "Cursor RTK preToolUse registration"
-  check_text "$cursor_dir/hooks.json" "$managed/cursor-session-guidance.py" "Cursor guidance sessionStart registration"
+  check_hook_registration "Cursor" python3 "$(dirname "${BASH_SOURCE[0]}")/scripts/install-cursor.py" --cursor-dir "$cursor_dir" \
+    --hook-source-dir "$(dirname "${BASH_SOURCE[0]}")/hooks" --verify
   if printf '%s' '{"hook_event_name":"sessionStart","session_id":"doctor","conversation_id":"doctor"}' \
     | /usr/bin/python3 -B "$managed/cursor-session-guidance.py" 2>/dev/null \
     | python3 -c 'import json, sys; sys.exit(0 if json.load(sys.stdin).get("additional_context", "").strip() else 1)'; then
@@ -215,8 +219,9 @@ check_antigravity_home() {
     "Antigravity shared fail-close/clean-break guidance"
   check_file "$managed/rtk-antigravity-safe-hook.py" "Antigravity RTK Safe Hook"
   check_file "$managed/rtk-codex-safe-hook.py" "Antigravity RTK Safe Hook rules"
-  check_text "$gemini_dir/config/hooks.json" "$managed/rtk-antigravity-safe-hook.py" \
-    "Antigravity RTK PreToolUse registration"
+  check_hook_registration "Antigravity" python3 "$(dirname "${BASH_SOURCE[0]}")/scripts/install-antigravity.py" \
+    --gemini-dir "$gemini_dir" --codex-skills-dir "$(realpath -m "$SKILLS_DIR")" \
+    --hook-source-dir "$(dirname "${BASH_SOURCE[0]}")/hooks" --verify
   check_hook_regression "$managed/test.sh" "Antigravity RTK Safe Hook regression"
   if python3 - "$gemini_dir/config/skills.json" "$(realpath -m "$SKILLS_DIR")" <<'PY'
 import json, sys
@@ -295,6 +300,7 @@ if [[ "$skip_login" -eq 0 ]]; then
   else
     fail "Cursor CLI login required: agent login"
   fi
+  printf 'wait Antigravity CLI sign-in check (up to %s s without a session)\n' "$AGENT_SIGN_IN_TIMEOUT"
   if antigravity_logged_in; then
     pass "Antigravity CLI sign-in"
   else

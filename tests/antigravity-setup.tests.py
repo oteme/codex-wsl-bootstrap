@@ -104,7 +104,7 @@ class AntigravityInstallTests(unittest.TestCase):
         # Options in extra come last, so they override the defaults.
         return subprocess.run(
             [sys.executable, str(INSTALLER), "--gemini-dir", str(gemini), "--codex-skills-dir", str(self.skills),
-             "--hook-source-dir", str(self.source), "--rtk-version", "0.46.0", *extra],
+             "--hook-source-dir", str(self.source), *extra],
             capture_output=True, text=True, cwd=cwd)
 
     def install(self, gemini, *extra):
@@ -120,18 +120,22 @@ class AntigravityInstallTests(unittest.TestCase):
         self.assertIn(message, result.stderr)
         self.assertEqual(snapshot(self.root), before)
 
+    def assertVerified(self, gemini):
+        before = snapshot(self.root)
+        self.install(gemini, "--verify")
+        self.assertEqual(snapshot(self.root), before)
+
     def test_fresh_install_writes_managed_dir_hook_skills_and_servers(self):
         self.install(self.gemini)
         managed = self.gemini / MANAGED
         config = self.gemini / "config"
         self.assertEqual(sorted(path.name for path in managed.iterdir()),
-                         sorted([*SOURCES, "rtk-version", "skills-entry.json", MARKER]))
+                         sorted([*SOURCES, "skills-entry.json", MARKER]))
         for name, source in SOURCES.items():
             self.assertEqual((managed / name).read_bytes(), (self.source / source).read_bytes())
             self.assertEqual(mode(managed / name), 0o755)
-        self.assertEqual((managed / "rtk-version").read_text(), "0.46.0\n")
         self.assertEqual((managed / "skills-entry.json").read_text(), json.dumps(skills_entry(self.skills), indent=2) + "\n")
-        for name in ["rtk-version", "skills-entry.json", MARKER]:
+        for name in ["skills-entry.json", MARKER]:
             self.assertEqual(mode(managed / name), 0o644)
         expected = {
             "hooks.json": {HOOK_NAME: managed_hook(managed)},
@@ -183,7 +187,7 @@ class AntigravityInstallTests(unittest.TestCase):
         write(managed / "rtk-antigravity-safe-hook.py", "tampered\n")
         (managed / "test.sh").chmod(0o600)
         write(self.source / "rtk-codex-safe-hook.py", "print('updated codex hook')\n")
-        self.install(self.gemini, "--rtk-version", "0.47.0")
+        self.install(self.gemini)
 
         hooks = read(config / "hooks.json")
         self.assertEqual(list(hooks), [HOOK_NAME, "orca-status"])
@@ -193,7 +197,6 @@ class AntigravityInstallTests(unittest.TestCase):
         for name, source in SOURCES.items():
             self.assertEqual((managed / name).read_bytes(), (self.source / source).read_bytes())
             self.assertEqual(mode(managed / name), 0o755)
-        self.assertEqual((managed / "rtk-version").read_text(), "0.47.0\n")
 
     def test_recorded_entry_follows_a_moved_codex_skills_dir(self):
         self.install(self.gemini)
@@ -226,6 +229,29 @@ class AntigravityInstallTests(unittest.TestCase):
         self.assertEqual(snapshot(self.root), before)
         write(config / "skills.json", "")
         self.assertRefused(self.gemini, "refusing to replace invalid Antigravity skills file", "--check-only")
+
+    def test_verify_accepts_only_the_hook_setup_writes(self):
+        config = self.gemini / "config"
+        write(config / "hooks.json", ORCA)
+        self.install(self.gemini)
+        self.assertVerified(self.gemini)
+        # Orca's own entry does not matter.
+        hook = managed_hook(self.gemini / MANAGED)
+        write(config / "hooks.json", {HOOK_NAME: hook})
+        self.assertVerified(self.gemini)
+
+        entry = hook["PreToolUse"][0]
+        handler = entry["hooks"][0]
+        cases = [
+            ("another timeout", {**ORCA, HOOK_NAME: {"PreToolUse": [{**entry, "hooks": [{**handler, "timeout": 30}]}]}}),
+            ("another matcher", {**ORCA, HOOK_NAME: {"PreToolUse": [{**entry, "matcher": "*"}]}}),
+            ("missing", ORCA),
+            ("managed directory in another named hook", {**ORCA, HOOK_NAME: hook, "rtk-copy": hook}),
+        ]
+        for name, hooks in cases:
+            with self.subTest(name):
+                write(config / "hooks.json", hooks)
+                self.assertRefused(self.gemini, "is not the one setup writes", "--verify")
 
     def test_refusals_change_nothing(self):
         def symlinked(name, content):
@@ -325,7 +351,6 @@ class AntigravityInstallTests(unittest.TestCase):
             ("relative Codex skills directory", ["--codex-skills-dir", "relative/skills"], "--codex-skills-dir must be an absolute path"),
             ("relative Gemini directory", ["--gemini-dir", "relative/.gemini"], "--gemini-dir must be an absolute path"),
             ("missing hook source", ["--hook-source-dir", str(self.root / "missing")], "Antigravity hook source is missing"),
-            ("empty RTK version", ["--rtk-version", ""], "invalid RTK version"),
             ("Gemini directory is a file", ["--gemini-dir", str(self.root / "gemini file")], "refusing to use non-directory Gemini directory"),
         ]
         for name, extra, message in cases:

@@ -12,7 +12,7 @@ AGENTS = {'codex': 'Codex', 'cursor': 'Cursor', 'antigravity': 'Antigravity'}
 SCRIPTS = Path(__file__).parent
 
 
-def validate(executable, agent='codex'):
+def validate(executable, agent):
     if (not isinstance(executable, str) or not Path(executable).is_absolute()
             or any(c in executable for c in '\r\n\0')
             or not Path(executable).is_file() or not os.access(executable, os.X_OK)):
@@ -37,10 +37,6 @@ def load_agent():
         return agent, validate(data.get(agent), agent)
     except (ValueError, OSError) as exc:
         raise ValueError(f'{exc}; rerun Downloads/setup-wsl.cmd to configure Ralph runtime') from exc
-
-
-def load():
-    return load_agent()[1]
 
 
 def record(path, agent, executable):

@@ -36,7 +36,8 @@ for an existing Ubuntu/WSL2 environment, then sets up Cursor CLI and Antigravity
 same guidance, skills, Chrome MCP servers, RTK Safe Hook and Ralph runner.
 
 Environment overrides:
-  CODEX_HOME          Codex data directory (default: ~/.codex)
+  CODEX_HOME          Codex data directory; must resolve to ~/.codex, because Cursor loads
+                      Codex skills only from there (another value stops setup before any change)
   CODEX_APP_HOME      Codex App data directory exposed to WSL (optional)
   BOOTSTRAP_STATE_DIR Bootstrap-managed source checkouts
                       (default: ~/.local/share/codex-workstation-bootstrap)
@@ -362,39 +363,74 @@ install_agents_guidance() {
   install_guidance_block "$target_codex_dir/AGENTS.md" "$SCRIPT_DIR/config/AGENTS.global.md" "Codex"
 }
 
+# An instructions file setup would refuse: a symlink or other non-regular file, or managed-block
+# markers that do not pair up. The filter in install_guidance_block drops everything from a BEGIN
+# marker to its END marker, so an unpaired marker would silently drop the text the user wrote after
+# it. main() and the preflights call this before anything changes.
+check_guidance_target() {
+  local agents_file="$1"
+  if [[ -L "$agents_file" ]] || [[ -e "$agents_file" && ! -f "$agents_file" ]]; then
+    echo "error: refusing to replace non-regular $(basename "$agents_file"): $agents_file" >&2
+    exit 1
+  fi
+  [[ -f "$agents_file" ]] || return 0
+  if ! awk '
+    $0 == "<!-- BEGIN codex-workstation-bootstrap -->" { if (open) { bad = 1; exit } open = 1; next }
+    $0 == "<!-- END codex-workstation-bootstrap -->" { if (!open) { bad = 1; exit } open = 0 }
+    END { exit (bad || open) ? 1 : 0 }
+  ' "$agents_file"; then
+    echo "error: refusing to update $agents_file: its codex-workstation-bootstrap BEGIN and END markers do not pair up" >&2
+    exit 1
+  fi
+}
+
 # Replace the bootstrap-managed block in an instructions file, keeping everything else the user wrote.
 install_guidance_block() {
   local agents_file="$1"
   local guidance="$2"
   local label="$3"
-  local filtered
+  local filtered replacement
 
+  check_guidance_target "$agents_file"
   run mkdir -p "$(dirname "$agents_file")"
   if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "+ update managed block in $agents_file"
     return
   fi
 
-  if [[ -L "$agents_file" ]]; then
-    echo "error: refusing to replace symlinked $(basename "$agents_file"): $agents_file" >&2
-    exit 1
-  fi
-
   filtered="$(mktemp)"
   if [[ -f "$agents_file" ]]; then
+    # Drop the managed block, and hold blank lines back until more text follows: the blank lines an
+    # earlier run left around the block are not kept, so the file does not grow with every run.
     awk '
-      $0 == "<!-- BEGIN codex-workstation-bootstrap -->" { skip=1; next }
-      $0 == "<!-- END codex-workstation-bootstrap -->" { skip=0; next }
-      !skip { print }
+      $0 == "<!-- BEGIN codex-workstation-bootstrap -->" { skip = 1; next }
+      $0 == "<!-- END codex-workstation-bootstrap -->" { skip = 0; next }
+      skip { next }
+      $0 == "" { blank++; next }
+      { for (; blank > 0; blank--) print ""; print }
     ' "$agents_file" > "$filtered"
   fi
 
-  {
-    cat "$filtered"
-    [[ -s "$filtered" ]] && printf '\n\n'
-    cat "$guidance"
-    printf '\n'
-  } > "$agents_file"
+  # Write next to the file and move it into place, so that a failed write (a full disk) leaves the
+  # user's file as it was. Each step is chained explicitly, so a failure also removes the partial
+  # copy instead of leaving it next to the user's file.
+  replacement="$(mktemp "$(dirname "$agents_file")/.$(basename "$agents_file").XXXXXX")"
+  if ! {
+    cat "$filtered" &&
+      { [[ ! -s "$filtered" ]] || printf '\n'; } &&
+      cat "$guidance" &&
+      printf '\n'
+  } > "$replacement" ||
+    ! if [[ -f "$agents_file" ]]; then
+      chmod --reference="$agents_file" "$replacement"
+    else
+      chmod "$(printf '%04o' $((0666 & ~$(umask))))" "$replacement"
+    fi ||
+    ! mv -f -- "$replacement" "$agents_file"; then
+    rm -f -- "$replacement" "$filtered"
+    echo "error: could not write $agents_file" >&2
+    exit 1
+  fi
   rm -f "$filtered"
   log "Updated shared $label guidance: $agents_file"
 }
@@ -480,11 +516,7 @@ validate_app_install_targets() {
   for skill_name in prd ralph ralph-bootstrap ralph-run go-backend orca-cli computer-use; do
     validate_app_managed_skill_target "$target_codex_dir" "$skill_name"
   done
-  if [[ -e "$target_codex_dir/AGENTS.md" && ! -f "$target_codex_dir/AGENTS.md" ]] || \
-    [[ -L "$target_codex_dir/AGENTS.md" ]]; then
-    echo "error: refusing to replace non-regular AGENTS.md: $target_codex_dir/AGENTS.md" >&2
-    exit 1
-  fi
+  check_guidance_target "$target_codex_dir/AGENTS.md"
   python3 "$SCRIPT_DIR/scripts/install-codex-rtk-hook.py" \
     --codex-dir "$target_codex_dir" \
     --hook-source "$SCRIPT_DIR/hooks/rtk-codex-safe-hook.py" \
@@ -641,10 +673,20 @@ validate_agent_skill_target() {
   local skills_dir="$1"
   local skill_name="$2"
   local target="$skills_dir/$skill_name"
+  local path="$skills_dir"
   if [[ -L "$skills_dir" ]]; then
     echo "error: refusing to use symlinked skills directory: $skills_dir" >&2
     exit 1
   fi
+  # A file (or a dangling link) on the way would stop the skill install only after setup has changed
+  # other settings.
+  while [[ "$path" != "$HOME" && "$path" != / && "$path" != . ]]; do
+    if [[ -e "$path" && ! -d "$path" ]] || [[ -L "$path" && ! -e "$path" ]]; then
+      echo "error: refusing to use non-directory $path for the $skill_name skill" >&2
+      exit 1
+    fi
+    path="$(dirname "$path")"
+  done
   [[ -e "$target" || -L "$target" ]] || return 0
   [[ ! -L "$target" && -f "$target/$MANAGED_MARKER" ]] && return 0
   echo "error: refusing to overwrite an unmanaged skill: $target" >&2
@@ -668,19 +710,13 @@ install_agent_ralph_skill() {
 }
 
 preflight_cursor_environment() {
-  [[ "$DRY_RUN" -eq 0 ]] || return 0
   if [[ "$(realpath -m "$CODEX_DIR")" != "$(realpath -m "$HOME/.codex")" ]]; then
     echo "error: Cursor loads Codex skills only from ~/.codex/skills; CODEX_HOME=$CODEX_DIR is not supported" >&2
     exit 1
   fi
   validate_agent_skill_target "$HOME/.cursor/skills" ralph-run-cursor
-  local guidance
-  guidance="$(mktemp)"
-  compose_guidance cursor "$guidance"
   python3 "$SCRIPT_DIR/scripts/install-cursor.py" --cursor-dir "$HOME/.cursor" \
-    --hook-source-dir "$SCRIPT_DIR/hooks" --guidance-file "$guidance" \
-    --rtk-version "$RTK_VERSION" --check-only
-  rm -f "$guidance"
+    --hook-source-dir "$SCRIPT_DIR/hooks" --check-only
 }
 
 install_cursor_environment() {
@@ -691,25 +727,20 @@ install_cursor_environment() {
   fi
   local guidance
   guidance="$(mktemp)"
-  compose_guidance cursor "$guidance"
+  # errexit would skip the rm below, so a failed step removes the temporary file itself.
+  compose_guidance cursor "$guidance" || { rm -f "$guidance"; exit 1; }
   python3 "$SCRIPT_DIR/scripts/install-cursor.py" --cursor-dir "$HOME/.cursor" \
-    --hook-source-dir "$SCRIPT_DIR/hooks" --guidance-file "$guidance" --rtk-version "$RTK_VERSION"
+    --hook-source-dir "$SCRIPT_DIR/hooks" --guidance-file "$guidance" || { rm -f "$guidance"; exit 1; }
   rm -f "$guidance"
   log "Installed Cursor hooks, guidance and Chrome MCP servers"
   install_agent_ralph_skill cursor ralph-run-cursor "$HOME/.cursor/skills" agent
 }
 
 preflight_antigravity_environment() {
-  [[ "$DRY_RUN" -eq 0 ]] || return 0
-  local agents_file="$HOME/.gemini/AGENTS.md"
-  if [[ -L "$agents_file" ]] || [[ -e "$agents_file" && ! -f "$agents_file" ]]; then
-    echo "error: refusing to replace non-regular AGENTS.md: $agents_file" >&2
-    exit 1
-  fi
+  check_guidance_target "$HOME/.gemini/AGENTS.md"
   validate_agent_skill_target "$HOME/.gemini/antigravity-cli/skills" ralph-run
   python3 "$SCRIPT_DIR/scripts/install-antigravity.py" --gemini-dir "$HOME/.gemini" \
-    --codex-skills-dir "$(realpath -m "$SKILLS_DIR")" --hook-source-dir "$SCRIPT_DIR/hooks" \
-    --rtk-version "$RTK_VERSION" --check-only
+    --codex-skills-dir "$(realpath -m "$SKILLS_DIR")" --hook-source-dir "$SCRIPT_DIR/hooks" --check-only
 }
 
 install_antigravity_environment() {
@@ -720,13 +751,14 @@ install_antigravity_environment() {
     return
   fi
   local guidance
+  check_guidance_target "$HOME/.gemini/AGENTS.md"
   guidance="$(mktemp)"
-  compose_guidance antigravity "$guidance"
+  # errexit would skip the rm below, so a failed step removes the temporary file itself.
+  compose_guidance antigravity "$guidance" || { rm -f "$guidance"; exit 1; }
   install_guidance_block "$HOME/.gemini/AGENTS.md" "$guidance" "Antigravity"
   rm -f "$guidance"
   python3 "$SCRIPT_DIR/scripts/install-antigravity.py" --gemini-dir "$HOME/.gemini" \
-    --codex-skills-dir "$(realpath -m "$SKILLS_DIR")" --hook-source-dir "$SCRIPT_DIR/hooks" \
-    --rtk-version "$RTK_VERSION"
+    --codex-skills-dir "$(realpath -m "$SKILLS_DIR")" --hook-source-dir "$SCRIPT_DIR/hooks"
   log "Installed Antigravity hooks, skills.json and Chrome MCP servers"
   install_agent_ralph_skill antigravity ralph-run "$HOME/.gemini/antigravity-cli/skills" agy
 }
@@ -751,6 +783,11 @@ main() {
   ensure_base_tools
   prepare_sources
   preflight_codex_app_environment
+  # A file setup would refuse stops the run here, before any Codex, Cursor or Antigravity setting
+  # changes. Cursor and Antigravity are set up after Codex.
+  check_guidance_target "$CODEX_DIR/AGENTS.md"
+  preflight_cursor_environment
+  preflight_antigravity_environment
   run mkdir -p "$CODEX_DIR"
   ensure_codex
   ensure_rtk
@@ -777,6 +814,8 @@ main() {
     if ! cursor_logged_in; then
       printf '\nCursor CLIへのログインが必要です。次を実行してください:\n  agent login\n'
     fi
+    printf '\nAntigravity CLIのサインインを確認しています（未サインインのときは最大%s秒かかります）...\n' \
+      "$AGENT_SIGN_IN_TIMEOUT"
     if ! antigravity_logged_in; then
       printf '\nAntigravity CLIへのサインインが必要です。次を実行して、表示される案内に従ってください:\n  agy\n'
     fi

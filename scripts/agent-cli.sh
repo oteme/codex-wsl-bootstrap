@@ -5,6 +5,8 @@
 # ANTIGRAVITY_CONVERSATION_ID and an unlimited default print timeout for agy.
 CURSOR_MIN_VERSION="2026.09.28"
 ANTIGRAVITY_MIN_VERSION="1.2.13"
+# Seconds a sign-in check may take; without a session agy waits for a sign-in until stopped.
+AGENT_SIGN_IN_TIMEOUT=30
 
 version_at_least() {
   local actual="$1"
@@ -41,13 +43,13 @@ sys.exit(0 if json.dumps(value) == sys.argv[3] else 1)
 
 cursor_logged_in() {
   local reply
-  reply="$(agent status --format json < /dev/null 2>/dev/null)" || return 1
+  reply="$(timeout "$AGENT_SIGN_IN_TIMEOUT" agent status --format json < /dev/null 2>/dev/null)" || return 1
   json_field_is "$reply" isAuthenticated true
 }
 
 antigravity_logged_in() {
   # /usage answers without a model turn; without a session agy waits for a sign-in, so it is bounded.
   local reply
-  reply="$(cd "$HOME" && timeout 30 agy -p "/usage" --output-format json < /dev/null 2>/dev/null)" || return 1
+  reply="$(cd "$HOME" && timeout "$AGENT_SIGN_IN_TIMEOUT" agy -p "/usage" --output-format json < /dev/null 2>/dev/null)" || return 1
   json_field_is "$reply" status '"SUCCESS"'
 }

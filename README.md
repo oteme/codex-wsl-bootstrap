@@ -25,11 +25,18 @@ Recreates this Codex CLI environment on another Ubuntu/WSL2 device:
 
 The bootstrap installs a checksum-verified, pinned RTK binary and registers a global Codex
 `PreToolUse` hook. The hook rewrites only allowlisted, single-process commands such as
-`go test ./...`, `git status`, and `npx eslint .`. Shell control syntax, pipes, redirects,
+`go test ./...`, `git status`, and `npx eslint .`. `git diff`, `git show` and `git log` are not
+rewritten: RTK cuts each file's diff to 100 lines and a log to 10 commits without saying so,
+which would hide part of a change or a history from a review.
+Neither are `head` and `tail` (RTK printed a single line for `head -2`) nor commands spaced
+other than with single spaces (RTK misread `head  -n 3`). `grep` and `rg` are rewritten; RTK
+shortens long results but says so and names the file that holds the rest. Shell
+control syntax, pipes, redirects,
 assignments, substitutions, mutating flags, `find`, and unknown commands remain byte-for-byte
 unchanged. An allowlisted command that RTK has no rewrite for, such as `npm test`, also runs
 unchanged: RTK 0.46 reports it with exit status 1 and `No rewrite for: <command>`, sometimes after
-its own `[rtk]` notice lines, and only that report is treated as "no rewrite".
+its own `[rtk]` notice lines. Of RTK's failures, only that exact report counts as "no rewrite";
+any other failure is still denied.
 
 The Codex adapter is separate from RTK's Claude hook. Invalid hook input, a missing or failing
 RTK binary, an unexpected rewrite, and invalid rewritten Bash are denied instead of silently
@@ -207,14 +214,20 @@ edit shell profiles) when `agent` is missing, and runs `agent update` when it is
 Cursor loads `~/.codex/skills`, `~/.claude/skills` and the Claude Code hooks in
 `~/.claude/settings.json` by itself (Cursor Settings > Agents > Third-Party Imports, on by default;
 `cli-config.json` has no setting for it). The bootstrap therefore copies no skills into Cursor, and it
-refuses to set up Cursor when `CODEX_HOME` is not `~/.codex`. On a machine that also has Claude Code,
+refuses a `CODEX_HOME` that does not resolve to `~/.codex`: the whole setup, Codex included, stops
+before it changes any Codex, Cursor or Antigravity setting (only the gstack and Ralph source
+checkouts come first), in a dry run too. The same holds for the other Cursor and Antigravity file
+checks and for an `AGENTS.md` whose managed-block markers do not pair up. On a machine that also
+has Claude Code,
 skills with the same name appear once, and the Claude copy is the one Cursor lists; Cursor names
-skills by their folder, so Codex's gstack skills keep their `gstack-*` names.
+skills by their folder, so Codex's gstack skills keep their `gstack-*` names. The Claude Code hooks
+run in Cursor next to the Safe Hook, so a Claude-side RTK hook can still rewrite a command that the
+Safe Hook leaves unchanged.
 
 | What | Where |
 | --- | --- |
 | Shared guidance | A `sessionStart` hook returns it as `additional_context`, because Cursor has no user-level instructions file. The managed copy is `~/.cursor/hooks/codex-workstation-bootstrap/guidance.md`. |
-| RTK Safe Hook | A `preToolUse` adapter for `Shell`, registered with `failClosed`: it returns only `updated_input` for an allowlisted rewrite, `{}` otherwise, and an explicit deny for invalid input. It reuses the unchanged Codex hook rules. |
+| RTK Safe Hook | A `preToolUse` adapter for `Shell`, registered with `failClosed`: it returns only `updated_input` for an allowlisted rewrite, `{}` otherwise, and an explicit deny for invalid input. It reuses the Codex hook rules. |
 | Chrome DevTools MCP | `chrome-devtools` (9222) and `chrome-devtools-9223` in `~/.cursor/mcp.json`. Servers there need no per-project approval. |
 | Ralph | `ralph-run-cursor` in `~/.cursor/skills`. In Cursor, a skill named `ralph-run` is Codex's or Claude's. |
 
@@ -245,18 +258,23 @@ with the same worker protocol, policy review, exact-tree commit and iteration bu
 - Workers and the reviewer run headless: `agent -p --force --trust --sandbox disabled` and
   `agy --dangerously-skip-permissions`.
 - The reviewer must report the `git write-tree` of the staged snapshot it reviewed. A review
-  without that exact tree is invalid output, so a reviewer that could not read the diff cannot
-  approve it. agy constrains the review with `--json-schema`; Cursor has no such option and receives
-  the schema in the prompt.
+  without that exact tree is invalid output, so a reviewer that could not run commands in the
+  review worktree cannot approve. agy constrains the review with `--json-schema`; Cursor has no
+  such option and receives the schema in the prompt. The Cursor reviewer is told to read the diff
+  through `| cat`, because the Claude Code RTK hook that Cursor also runs cuts a plain `git diff`.
 - A Cursor run that does not end with a successful `result` event, and an agy run whose status is
-  not `SUCCESS` or whose stderr reports an auto-denied tool, is a hard error. agy exits 0 in both
-  cases.
+  not `SUCCESS`, whose `denied_actions` is not empty or whose stderr reports an auto-denied tool,
+  is a hard error. agy exits 0 in these cases.
 - The launcher reads the initiating conversation from `CURSOR_CONVERSATION_ID` or
   `ANTIGRAVITY_CONVERSATION_ID`. Neither CLI has a message queue, so the supervisor delivers the
-  result by resuming that conversation once with a headless turn that has no automatic approvals.
+  result by resuming that conversation once with a headless turn that has no automatic approvals,
+  no earlier than a minute after the run started, so that it cannot collide with the turn that
+  started Ralph.
   `notification=delivered` requires the CLI to report the same conversation back, because both
   CLIs silently start a new conversation for an unknown ID. A conversation that is open in an
-  interactive session shows the turn after it is reloaded.
+  interactive session shows the turn after it is reloaded. Cursor resumes the conversation in the
+  project's git top level, so start Cursor there; a session started elsewhere gets
+  `notification=failed`, and the result stays in the result file.
 
 ## Ralph models
 
@@ -277,7 +295,9 @@ Both keys are optional. Ask for a model when starting a run ("run ralph with <mo
 skill passes `--model` (workers) or `--review-model` (policy reviewer) to the launcher for that run
 only. Each role uses the run value, then the saved value; the reviewer then falls back to the
 worker's model; with no model anywhere the CLI default is used, exactly as before. Cursor and agy
-check the names against `agent models` and `agy models` before a run starts. Codex has no model
+check the names against `agent models` and `agy models` before a run starts; Cursor's parameterized
+names such as `claude-opus-4-8[effort=high]` are not listed there, so they are left to Cursor, which
+rejects an invalid one in the first iteration. An empty run model is refused. Codex has no model
 list, so an unknown name fails the first `codex exec`. An invalid settings file stops every run of
 that agent, and Doctor reports it.
 

@@ -139,18 +139,8 @@ def commands_in(value: object) -> list[object]:
     return []
 
 
-def merge_hooks(path: Path, managed_dir: Path) -> dict[str, object]:
-    data = read_json_object(path, "Antigravity hooks file")
-    if data is None:
-        data = {}
-    if HOOK_NAME in data:
-        # Another tool may use the same name; take it over only when every command is ours.
-        commands = commands_in(data[HOOK_NAME])
-        if not commands or not all(references(command, managed_dir) for command in commands):
-            raise SystemExit(
-                f"error: refusing to replace hook {HOOK_NAME} that this bootstrap does not manage in {path}"
-            )
-    data[HOOK_NAME] = {
+def managed_hook(managed_dir: Path) -> dict[str, object]:
+    return {
         "PreToolUse": [
             {
                 "matcher": "run_command",
@@ -164,6 +154,29 @@ def merge_hooks(path: Path, managed_dir: Path) -> dict[str, object]:
             }
         ]
     }
+
+
+def verify_hooks(path: Path, managed_dir: Path) -> None:
+    """Refuse when the managed hook is not registered exactly as setup writes it."""
+    data = read_json_object(path, "Antigravity hooks file") or {}
+    elsewhere = [name for name, value in data.items() if name != HOOK_NAME
+                 and any(references(command, managed_dir) for command in commands_in(value))]
+    if data.get(HOOK_NAME) != managed_hook(managed_dir) or elsewhere:
+        raise SystemExit(f"error: the Antigravity hook registration in {path} is not the one setup writes")
+
+
+def merge_hooks(path: Path, managed_dir: Path) -> dict[str, object]:
+    data = read_json_object(path, "Antigravity hooks file")
+    if data is None:
+        data = {}
+    if HOOK_NAME in data:
+        # Another tool may use the same name; take it over only when every command is ours.
+        commands = commands_in(data[HOOK_NAME])
+        if not commands or not all(references(command, managed_dir) for command in commands):
+            raise SystemExit(
+                f"error: refusing to replace hook {HOOK_NAME} that this bootstrap does not manage in {path}"
+            )
+    data[HOOK_NAME] = managed_hook(managed_dir)
     return data
 
 
@@ -233,22 +246,20 @@ def main() -> int:
     parser.add_argument("--gemini-dir", required=True, type=Path)
     parser.add_argument("--codex-skills-dir", required=True, type=Path)
     parser.add_argument("--hook-source-dir", required=True, type=Path)
-    parser.add_argument("--rtk-version", required=True)
-    parser.add_argument("--check-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check-only", action="store_true", help="check the settings without writing")
+    mode.add_argument("--verify", action="store_true", help="check the installed hook registration")
     args = parser.parse_args()
 
     for option, value in (("--gemini-dir", args.gemini_dir), ("--codex-skills-dir", args.codex_skills_dir)):
         if not value.is_absolute():
             raise SystemExit(f"error: {option} must be an absolute path: {value}")
-    if not args.rtk_version or any(character.isspace() for character in args.rtk_version):
-        raise SystemExit(f"error: invalid RTK version: {args.rtk_version!r}")
     contents: dict[str, tuple[bytes, int]] = {}
     for name, source_name in HOOK_FILES.items():
         source = args.hook_source_dir / source_name
         if not source.is_file():
             raise SystemExit(f"error: Antigravity hook source is missing: {source}")
         contents[name] = (source.read_bytes(), 0o755)
-    contents["rtk-version"] = (f"{args.rtk_version}\n".encode("utf-8"), 0o644)
 
     config_dir = args.gemini_dir / "config"
     require_directory(args.gemini_dir, "Gemini directory")
@@ -263,6 +274,9 @@ def main() -> int:
     hooks_path = config_dir / "hooks.json"
     skills_path = config_dir / "skills.json"
     mcp_path = config_dir / "mcp_config.json"
+    if args.verify:
+        verify_hooks(hooks_path, managed_dir)
+        return 0
     hooks_data = merge_hooks(hooks_path, managed_dir)
     recorded = read_json_object(managed_dir / SKILLS_RECORD, "recorded skills entry")
     skills_data = merge_skills(skills_path, desired, recorded)
