@@ -19,6 +19,7 @@ HOOK_FILES = {
     "rtk-codex-safe-hook.py": "rtk-codex-safe-hook.py",
     "rtk-cursor-safe-hook.py": "rtk-cursor-safe-hook.py",
     "cursor-session-guidance.py": "cursor-session-guidance.py",
+    "ralph-result-hook.py": "ralph-result-hook.py",
     "test.sh": "test-rtk-cursor-safe-hook.sh",
 }
 SERVERS = {"chrome-devtools": 9222, "chrome-devtools-9223": 9223}
@@ -137,6 +138,8 @@ def managed_handlers(managed_dir: Path) -> dict[str, dict[str, object]]:
             "failClosed": True,
         },
         "sessionStart": {"command": hook_command(managed_dir / "cursor-session-guidance.py"), "timeout": 10},
+        # Adds a finished Ralph run's result to the next message of the conversation that started it.
+        "beforeSubmitPrompt": {"command": hook_command(managed_dir / "ralph-result-hook.py") + " cursor", "timeout": 10},
     }
 
 
@@ -157,6 +160,15 @@ def verify_hooks(path: Path, managed_dir: Path) -> None:
     expected = {event: [handler] for event, handler in managed_handlers(managed_dir).items()}
     if registered != expected:
         raise SystemExit(f"error: the Cursor hook registration in {path} is not the one setup writes")
+
+
+def verify_files(managed_dir: Path) -> None:
+    """Refuse when a managed hook file is missing: a registered hook whose file is gone fails every
+    time it runs, and Cursor blocks the message when python3 exits 2 on a missing script."""
+    for name in HOOK_FILES:
+        path = managed_dir / name
+        if path.is_symlink() or not path.is_file():
+            raise SystemExit(f"error: the Cursor hook file {path} is missing")
 
 
 def merge_hooks(path: Path, managed_dir: Path) -> dict[str, object]:
@@ -263,6 +275,7 @@ def main() -> int:
     mcp_path = args.cursor_dir / "mcp.json"
     if args.verify:
         verify_hooks(hooks_path, managed_dir)
+        verify_files(managed_dir)
         read_guidance(managed_dir / "guidance.md")
         return 0
     hooks_data = merge_hooks(hooks_path, managed_dir)

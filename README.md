@@ -229,7 +229,7 @@ Safe Hook leaves unchanged.
 | Shared guidance | A `sessionStart` hook returns it as `additional_context`, because Cursor has no user-level instructions file. The managed copy is `~/.cursor/hooks/codex-workstation-bootstrap/guidance.md`. |
 | RTK Safe Hook | A `preToolUse` adapter for `Shell`, registered with `failClosed`: it returns only `updated_input` for an allowlisted rewrite, `{}` otherwise, and an explicit deny for invalid input. It reuses the Codex hook rules. |
 | Chrome DevTools MCP | `chrome-devtools` (9222) and `chrome-devtools-9223` in `~/.cursor/mcp.json`. Servers there need no per-project approval. |
-| Ralph | `ralph-run-cursor` in `~/.cursor/skills`. In Cursor, a skill named `ralph-run` is Codex's or Claude's. |
+| Ralph | `ralph-run-cursor` in `~/.cursor/skills`. In Cursor, a skill named `ralph-run` is Codex's or Claude's. A `beforeSubmitPrompt` hook adds a finished run's result to the next message of the conversation that started it. |
 
 ## Antigravity CLI
 
@@ -246,7 +246,7 @@ Antigravity reads no other tool's configuration, so everything is registered exp
 | Skills | `~/.gemini/config/skills.json` lists Antigravity's own `~/.gemini/antigravity-cli/skills` (with its `ralph-run`) first, then `~/.codex/skills` with `"exclude": ["ralph-run"]`. Antigravity shows the model only as many skill descriptions as its budget allows; with the Codex skills registered, the skills in its own directory were left out until that directory was listed first. Skills in `~/.gemini/skills` and some built-in skills can still be left out. `exclude` matches exact folder names. Antigravity lists skills by their frontmatter names, so gstack skills appear without the `gstack-` prefix. |
 | RTK Safe Hook | A `PreToolUse` adapter for `run_command` named `codex-workstation-bootstrap-rtk` in `~/.gemini/config/hooks.json`. It answers `{"decision":"ask"}` and rewrites through `overwrite.CommandLine`. agy blocks the command whenever a hook fails. |
 | Chrome DevTools MCP | `chrome-devtools` (9222) and `chrome-devtools-9223` in `~/.gemini/config/mcp_config.json`. The 0-byte file agy creates on first run means no servers; any other file that is not plain JSON (agy also accepts comments) is refused. |
-| Ralph | `ralph-run` in `~/.gemini/antigravity-cli/skills`. |
+| Ralph | `ralph-run` in `~/.gemini/antigravity-cli/skills`. A `PreInvocation` hook in the same named entry, `codex-workstation-bootstrap-rtk`, adds a finished run's result to the conversation that started it when it next goes to the model. |
 
 Other entries in these files, such as Orca's `orca-status` hook, are preserved.
 
@@ -266,15 +266,14 @@ with the same worker protocol, policy review, exact-tree commit and iteration bu
   not `SUCCESS`, whose `denied_actions` is not empty or whose stderr reports an auto-denied tool,
   is a hard error. agy exits 0 in these cases.
 - The launcher reads the initiating conversation from `CURSOR_CONVERSATION_ID` or
-  `ANTIGRAVITY_CONVERSATION_ID`. Neither CLI has a message queue, so the supervisor delivers the
-  result by resuming that conversation once with a headless turn that has no automatic approvals,
-  no earlier than a minute after the run started, so that it cannot collide with the turn that
-  started Ralph.
-  `notification=delivered` requires the CLI to report the same conversation back, because both
-  CLIs silently start a new conversation for an unknown ID. A conversation that is open in an
-  interactive session shows the turn after it is reloaded. Cursor resumes the conversation in the
-  project's git top level, so start Cursor there; a session started elsewhere gets
-  `notification=failed`, and the result stays in the result file.
+  `ANTIGRAVITY_CONVERSATION_ID`. Neither CLI has a message queue, so when the run ends the
+  supervisor leaves the result in an inbox named by that conversation
+  (`~/.cursor/ralph-inbox/<conversation>/` or `~/.gemini/antigravity-cli/ralph-inbox/<conversation>/`)
+  and records `notification=queued`. The result hook adds it to the conversation's next message
+  (Cursor: `beforeSubmitPrompt` context; agy: a `PreInvocation` user message at the first model call
+  of the next turn), whether the conversation is open in an interactive session or resumed later,
+  and records `notification=delivered` once it has handed the result to the CLI. A session that was
+  already running when setup installed the hook gets results only after it is restarted.
 
 ## Ralph models
 

@@ -18,6 +18,7 @@ SOURCES = {
     "rtk-codex-safe-hook.py": "rtk-codex-safe-hook.py",
     "rtk-cursor-safe-hook.py": "rtk-cursor-safe-hook.py",
     "cursor-session-guidance.py": "cursor-session-guidance.py",
+    "ralph-result-hook.py": "ralph-result-hook.py",
     "test.sh": "test-rtk-cursor-safe-hook.sh",
 }
 VALID_HOOKS = {"version": 1, "hooks": {"stop": [{"command": "echo stop"}]}}
@@ -34,6 +35,9 @@ def managed_handlers(managed):
     return {
         "preToolUse": {"command": command("rtk-cursor-safe-hook.py"), "matcher": "^Shell$", "timeout": 10, "failClosed": True},
         "sessionStart": {"command": command("cursor-session-guidance.py"), "timeout": 10},
+        # The result hook serves both agents, so the command names Cursor. Without failClosed, a
+        # failing hook does not block the prompt.
+        "beforeSubmitPrompt": {"command": command("ralph-result-hook.py") + " cursor", "timeout": 10},
     }
 
 
@@ -82,8 +86,9 @@ class CursorInstallTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.source = self.root / "hook source"
+        # Each fixture prints its name and the arguments it was started with.
         for name in SOURCES.values():
-            write(self.source / name, f"print('fixture {name}')\n")
+            write(self.source / name, f"import sys\nprint('fixture {name}', *sys.argv[1:])\n")
         self.guidance = self.root / "composed guidance.md"
         write(self.guidance, "## gstack\n\nfixture guidance\n")
         self.cursor = self.root / "home dir" / ".cursor"
@@ -161,8 +166,9 @@ class CursorInstallTests(unittest.TestCase):
             "preToolUse": [user_hooks["hooks"]["preToolUse"][0], handlers["preToolUse"]],
             "afterFileEdit": [],
             "sessionStart": [handlers["sessionStart"]],
+            "beforeSubmitPrompt": [handlers["beforeSubmitPrompt"]],
         })
-        self.assertEqual(list(hooks["hooks"]), ["stop", "preToolUse", "afterFileEdit", "sessionStart"])
+        self.assertEqual(list(hooks["hooks"]), ["stop", "preToolUse", "afterFileEdit", "sessionStart", "beforeSubmitPrompt"])
         mcp = json.loads((self.cursor / "mcp.json").read_text())
         self.assertEqual(mcp, {"mcpServers": {"github": github, "chrome-devtools": chrome(9222),
                                               "chrome-devtools-9223": chrome(9223)}, "extra": extra})
@@ -175,6 +181,7 @@ class CursorInstallTests(unittest.TestCase):
         handlers = managed_handlers(managed)
         # A directory whose name only starts with the managed path is not managed.
         sibling = "/usr/bin/python3 " + shlex.quote(str(managed) + "-extra/hook.py")
+        prompt = handlers["beforeSubmitPrompt"]
         write(self.cursor / "hooks.json", {
             "version": 1,
             "hooks": {
@@ -183,6 +190,9 @@ class CursorInstallTests(unittest.TestCase):
                 "beforeShellExecution": [{"command": "/usr/bin/python3 " + shlex.quote(str(managed / "old-hook.py"))}],
                 "sessionStart": [handlers["sessionStart"], handlers["sessionStart"]],
                 "stop": [{"command": sibling}],
+                # The result hook without the agent argument it needs.
+                "beforeSubmitPrompt": [{"command": "user-prompt-audit"},
+                                       {**prompt, "command": prompt["command"].removesuffix(" cursor")}],
             },
         })
         write(managed / "rtk-cursor-safe-hook.py", "tampered\n")
@@ -200,6 +210,7 @@ class CursorInstallTests(unittest.TestCase):
             "beforeShellExecution": [],
             "sessionStart": [handlers["sessionStart"]],
             "stop": [{"command": sibling}],
+            "beforeSubmitPrompt": [{"command": "user-prompt-audit"}, prompt],
         })
 
     def test_identical_server_is_kept_as_written(self):
@@ -250,7 +261,7 @@ class CursorInstallTests(unittest.TestCase):
         self.install(self.cursor)
         self.assertVerified(self.cursor)
         handlers = managed_handlers(self.cursor / MANAGED)
-        pre, start = handlers["preToolUse"], handlers["sessionStart"]
+        pre, start, prompt = handlers["preToolUse"], handlers["sessionStart"], handlers["beforeSubmitPrompt"]
         # User handlers do not matter, not even one with the managed handler's old matcher.
         user = {"command": "user-shell-guard", "matcher": "Shell", "timeout": 5}
         write(self.cursor / "hooks.json", {"version": 1, "hooks": {
@@ -258,21 +269,45 @@ class CursorInstallTests(unittest.TestCase):
             "preToolUse": [user, pre, {"command": "echo pre", "failClosed": False}],
             "beforeShellExecution": [user],
             "sessionStart": [{"command": "echo start"}, start],
+            "beforeSubmitPrompt": [prompt, {"command": "echo prompt"}],
         }})
         self.assertVerified(self.cursor)
 
         cases = [
-            ("failClosed false", {"preToolUse": [{**pre, "failClosed": False}], "sessionStart": [start]}),
-            ("matcher Shell", {"preToolUse": [{**pre, "matcher": "Shell"}], "sessionStart": [start]}),
-            ("under another event", {"beforeShellExecution": [pre], "sessionStart": [start]}),
-            ("also under another event", {"preToolUse": [pre], "beforeShellExecution": [pre], "sessionStart": [start]}),
-            ("registered twice", {"preToolUse": [pre, pre], "sessionStart": [start]}),
-            ("missing", {"preToolUse": [user], "sessionStart": [start]}),
-            ("sessionStart missing", {"preToolUse": [pre], "sessionStart": [{"command": "echo start"}]}),
-            ("sessionStart with another timeout", {"preToolUse": [pre], "sessionStart": [{**start, "timeout": 30}]}),
-            ("sessionStart registered twice", {"preToolUse": [pre], "sessionStart": [start, start]}),
-            ("sessionStart under another event", {"preToolUse": [pre], "sessionEnd": [start]}),
-            ("sessionStart also under another event", {"preToolUse": [pre], "sessionStart": [start], "sessionEnd": [start]}),
+            ("failClosed false", {"preToolUse": [{**pre, "failClosed": False}], "sessionStart": [start], "beforeSubmitPrompt": [prompt]}),
+            ("matcher Shell", {"preToolUse": [{**pre, "matcher": "Shell"}], "sessionStart": [start], "beforeSubmitPrompt": [prompt]}),
+            ("under another event", {"beforeShellExecution": [pre], "sessionStart": [start], "beforeSubmitPrompt": [prompt]}),
+            ("also under another event",
+             {"preToolUse": [pre], "beforeShellExecution": [pre], "sessionStart": [start], "beforeSubmitPrompt": [prompt]}),
+            ("registered twice", {"preToolUse": [pre, pre], "sessionStart": [start], "beforeSubmitPrompt": [prompt]}),
+            ("missing", {"preToolUse": [user], "sessionStart": [start], "beforeSubmitPrompt": [prompt]}),
+            ("sessionStart missing", {"preToolUse": [pre], "sessionStart": [{"command": "echo start"}], "beforeSubmitPrompt": [prompt]}),
+            ("sessionStart with another timeout",
+             {"preToolUse": [pre], "sessionStart": [{**start, "timeout": 30}], "beforeSubmitPrompt": [prompt]}),
+            ("sessionStart registered twice", {"preToolUse": [pre], "sessionStart": [start, start], "beforeSubmitPrompt": [prompt]}),
+            ("sessionStart under another event", {"preToolUse": [pre], "sessionEnd": [start], "beforeSubmitPrompt": [prompt]}),
+            ("sessionStart also under another event",
+             {"preToolUse": [pre], "sessionStart": [start], "sessionEnd": [start], "beforeSubmitPrompt": [prompt]}),
+            # Setup before the result hook registered preToolUse and sessionStart alone.
+            ("beforeSubmitPrompt missing",
+             {"preToolUse": [pre], "sessionStart": [start], "beforeSubmitPrompt": [{"command": "echo prompt"}]}),
+            ("beforeSubmitPrompt with another timeout",
+             {"preToolUse": [pre], "sessionStart": [start], "beforeSubmitPrompt": [{**prompt, "timeout": 30}]}),
+            # A failing result hook must not block the prompt.
+            ("beforeSubmitPrompt with failClosed",
+             {"preToolUse": [pre], "sessionStart": [start], "beforeSubmitPrompt": [{**prompt, "failClosed": True}]}),
+            ("beforeSubmitPrompt without the agent argument",
+             {"preToolUse": [pre], "sessionStart": [start],
+              "beforeSubmitPrompt": [{**prompt, "command": prompt["command"].removesuffix(" cursor")}]}),
+            ("beforeSubmitPrompt with the Antigravity argument",
+             {"preToolUse": [pre], "sessionStart": [start],
+              "beforeSubmitPrompt": [{**prompt, "command": prompt["command"].removesuffix(" cursor") + " antigravity"}]}),
+            ("beforeSubmitPrompt registered twice",
+             {"preToolUse": [pre], "sessionStart": [start], "beforeSubmitPrompt": [prompt, prompt]}),
+            ("beforeSubmitPrompt under another event",
+             {"preToolUse": [pre], "sessionStart": [start], "afterAgentResponse": [prompt]}),
+            ("beforeSubmitPrompt also under another event",
+             {"preToolUse": [pre], "sessionStart": [start], "beforeSubmitPrompt": [prompt], "afterAgentResponse": [prompt]}),
         ]
         for name, hooks in cases:
             with self.subTest(name):
@@ -281,7 +316,7 @@ class CursorInstallTests(unittest.TestCase):
 
         # Setup writes "version": 1, so a file without it is not the one setup wrote, however its
         # handlers look; a missing file has no version either.
-        hooks = {"preToolUse": [pre], "sessionStart": [start]}
+        hooks = {"preToolUse": [pre], "sessionStart": [start], "beforeSubmitPrompt": [prompt]}
         for name, data in [
             ("version missing", {"hooks": hooks}),
             ("version 2", {"version": 2, "hooks": hooks}),
@@ -320,6 +355,25 @@ class CursorInstallTests(unittest.TestCase):
                 elif content is not None:
                     write(guidance, content)
                 self.assertRefused(self.cursor, message, "--verify", guidance=False)
+
+    def test_verify_requires_every_managed_hook_file(self):
+        # A registered hook whose file is gone fails each time it runs, so --verify refuses a managed
+        # hook file that is missing or a symlink, even one to the file setup copies. A directory in
+        # its place is refused before that, as setup would refuse to replace it.
+        for index, name in enumerate(SOURCES):
+            for case in ["missing", "symlink", "directory"]:
+                with self.subTest(name=name, case=case):
+                    cursor = self.root / f"case {index} {case}" / ".cursor"
+                    self.install(cursor)
+                    path = cursor / MANAGED / name
+                    path.unlink()
+                    message = f"the Cursor hook file {path} is missing"
+                    if case == "symlink":
+                        path.symlink_to(self.source / SOURCES[name])
+                    elif case == "directory":
+                        path.mkdir()
+                        message = f"refusing to replace non-regular managed file: {path}"
+                    self.assertRefused(cursor, message, "--verify", guidance=False)
 
     def test_guidance_limit_counts_javascript_characters(self):
         # Cursor measures additional_context in UTF-16 code units, JavaScript's string length:
@@ -452,8 +506,10 @@ class CursorInstallTests(unittest.TestCase):
                 self.assertEqual(snapshot(self.root), first)
                 hooks = json.loads((cursor / "hooks.json").read_text())["hooks"]
                 self.assertEqual({event: len(handlers) for event, handlers in hooks.items()},
-                                 {"preToolUse": 1, "sessionStart": 1})
-                for event, name in [("preToolUse", "rtk-cursor-safe-hook.py"), ("sessionStart", "cursor-session-guidance.py")]:
+                                 {"preToolUse": 1, "sessionStart": 1, "beforeSubmitPrompt": 1})
+                # The fixture prints the arguments it received: the result hook gets exactly `cursor`.
+                for event, name in [("preToolUse", "rtk-cursor-safe-hook.py"), ("sessionStart", "cursor-session-guidance.py"),
+                                    ("beforeSubmitPrompt", "ralph-result-hook.py cursor")]:
                     result = subprocess.run(hooks[event][0]["command"], shell=True, capture_output=True, text=True)
                     self.assertEqual((result.returncode, result.stdout), (0, f"fixture {name}\n"), result.stderr)
 

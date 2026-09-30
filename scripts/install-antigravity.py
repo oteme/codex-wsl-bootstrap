@@ -23,6 +23,7 @@ EXCLUDED_SKILLS = ["ralph-run"]
 HOOK_FILES = {
     "rtk-codex-safe-hook.py": "rtk-codex-safe-hook.py",
     "rtk-antigravity-safe-hook.py": "rtk-antigravity-safe-hook.py",
+    "ralph-result-hook.py": "ralph-result-hook.py",
     "test.sh": "test-rtk-antigravity-safe-hook.sh",
 }
 SERVERS = {"chrome-devtools": 9222, "chrome-devtools-9223": 9223}
@@ -153,7 +154,15 @@ def managed_hook(managed_dir: Path) -> dict[str, object]:
                     }
                 ],
             }
-        ]
+        ],
+        # Adds a finished Ralph run's result to the next model call of the conversation that started it.
+        "PreInvocation": [
+            {
+                "type": "command",
+                "command": hook_command(managed_dir / "ralph-result-hook.py") + " antigravity",
+                "timeout": 10,
+            }
+        ],
     }
 
 
@@ -164,6 +173,15 @@ def verify_hooks(path: Path, managed_dir: Path) -> None:
                  and any(references(command, managed_dir) for command in commands_in(value))]
     if data.get(HOOK_NAME) != managed_hook(managed_dir) or elsewhere:
         raise SystemExit(f"error: the Antigravity hook registration in {path} is not the one setup writes")
+
+
+def verify_files(managed_dir: Path) -> None:
+    """Refuse when a managed hook file is missing: a registered hook whose file is gone fails every
+    time it runs, and Cursor blocks the message when python3 exits 2 on a missing script."""
+    for name in HOOK_FILES:
+        path = managed_dir / name
+        if path.is_symlink() or not path.is_file():
+            raise SystemExit(f"error: the Antigravity hook file {path} is missing")
 
 
 def merge_hooks(path: Path, managed_dir: Path) -> dict[str, object]:
@@ -287,6 +305,7 @@ def main() -> int:
     mcp_path = config_dir / "mcp_config.json"
     if args.verify:
         verify_hooks(hooks_path, managed_dir)
+        verify_files(managed_dir)
         return 0
     hooks_data = merge_hooks(hooks_path, managed_dir)
     agent_recorded = read_json_object(managed_dir / AGENT_SKILLS_RECORD, "recorded Antigravity skills entry")

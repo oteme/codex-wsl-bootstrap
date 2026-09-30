@@ -10,7 +10,7 @@ iteration starts with a clean agent context, receives the Ralph worker protocol 
 skill, reads the project's notes in `CLAUDE.md`, and updates `prd.json` and `progress.txt`. The
 runner independently reviews each diff for fail-close/clean-break violations, commits only approved
 work, and runs under a detached supervisor until every story is approved or the iteration budget is
-used up. The supervisor then resumes this Cursor conversation once with the result.
+used up. The result is then added to the next message sent in this Cursor conversation.
 
 Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, or the `prd`/`ralph`
 skills just to run the loop. The runner reads them as-is.
@@ -45,12 +45,10 @@ skills just to run the loop. The runner reads them as-is.
    with `/prd`, then convert it with `/ralph`.
 3. Require `CURSOR_CONVERSATION_ID` in your shell environment (Cursor sets it for agent commands).
    The ID must be a UUID. If it is missing, stop before starting work; do not substitute another ID.
-   The result is delivered by resuming this conversation in the project's git top level, so it
-   reaches this conversation only when this Cursor session was started there; otherwise delivery
-   records `notification=failed` and the result stays in the result file.
-   Setup records its verified Cursor CLI's absolute path in `scripts/cursor-runtime.json`; the
-   supervisor, workers, reviewer and result delivery use that executable. If the record or executable
-   is missing or invalid, stop and rerun `Downloads/setup-wsl.cmd`.
+   Setup records its verified Cursor CLI's absolute path in `<skill-dir>/scripts/cursor-runtime.json`,
+   next to `ralph-notify.py` (not in the project); the supervisor, workers and reviewer use that
+   executable. If the record or executable is missing or invalid, stop and rerun
+   `Downloads/setup-wsl.cmd`.
 4. Start exactly one supervisor, using the script alongside this skill:
 
    ```bash
@@ -63,31 +61,33 @@ skills just to run the loop. The runner reads them as-is.
    only when the user named a model for this run. The launcher waits for a short startup
    acknowledgement, returns a run ID and result file, then exits. It detaches the supervisor itself;
    do not add `&` or `nohup`. A repository lock prevents simultaneous runners.
-5. When `started=true` is returned, tell the user that Ralph started and provide the result file.
+5. When `started=true` is returned, tell the user that Ralph started, provide the result file, and
+   say that the result will come with their next message in this conversation once the run ends (a
+   Cursor session started before the latest setup gets it only after the session is restarted).
    **End the turn.** Do not keep the turn active with waits, sleeps, process checks or log polling.
-6. When a `[Ralph result]` message arrives in this conversation, read that run's `result.json` and
-   report its terminal status, iterations, exit code and progress path. `limit_reached` means the
-   budget ran out with stories still pending; the uncommitted work of the current story stays in the
-   working tree. Read the latest `progress.txt` entry before deciding whether to run again.
-   `failed` and `interrupted` are not success. Do not launch another run automatically.
+6. When a user message comes with a `[Ralph result]` context, read that run's `result.json` and
+   report its terminal status, iterations, exit code and progress path before answering the
+   message. `limit_reached` means the budget ran out with stories still pending; the uncommitted
+   work of the current story stays in the working tree. Read the latest `progress.txt` entry before
+   deciding whether to run again. `failed` and `interrupted` are not success. Do not launch another
+   run automatically. A `[Ralph result]` saying that a result could not be read, or that its delivery
+   cannot be recorded, names the file involved; report it as it is.
 
-The durable result separates work status from delivery status. Cursor has no message queue, so the
-supervisor delivers the result by resuming this conversation once with a headless turn (`agent -p
---resume=<conversation>`, no `--force`), no earlier than a minute after the run started, so that it
-cannot collide with the turn that started Ralph. `notification=delivered` means Cursor ran that turn
-in this same conversation; if you have this conversation open in an interactive session, the turn
-appears when the conversation is reloaded. Cursor silently starts a new conversation for an unknown
-ID, so delivery counts only when Cursor reports this conversation back; otherwise the supervisor
-records `notification=failed` with `notification_error` and does not retry. If asked for status, run
+The durable result separates work status from delivery status. Cursor has no message queue, so when
+the run ends the supervisor leaves the result in `~/.cursor/ralph-inbox/<conversation>/` and records
+`notification=queued`. The result hook that setup installs (`beforeSubmitPrompt`) adds it as context
+to the next message sent in this conversation, whether the conversation is open in an interactive
+session or resumed later, and records `notification=delivered` once it has handed the result to
+Cursor with that message. Nothing appears in the conversation before that message, and a hook stopped
+right after handing a result over can hand it over once more. If asked for status, run
 `python3 <skill-dir>/scripts/ralph-notify.py --status <result-file>`; it reports `monitoring_lost`
-for a dead supervisor, and `notification=lost` when the supervisor stopped after the
-run but before it delivered the result. Never start a second run to recover a notification.
+for a dead supervisor, and `notification=lost` when the supervisor stopped after the run but before
+it left the result in the inbox. Never start a second run to recover a notification.
 
 To stop a run, send one SIGTERM to the `supervisor_pid` recorded in the result file; the
-supervisor stops the runner and every agent it started, then delivers an `interrupted` result.
+supervisor stops the runner and every agent it started, then queues an `interrupted` result.
 Never signal `runner_pid` or an agent process directly: the agent would keep changing the working
-tree after the repository lock is released. A second signal cancels the pending delivery, and
-`--status` then reports `notification=lost`.
+tree after the repository lock is released.
 
 ## Execution Notes
 

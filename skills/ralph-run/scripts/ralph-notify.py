@@ -2,9 +2,9 @@
 """Run Ralph without model polling; deliver one terminal result to the initiating conversation.
 
 Codex queues the result to its thread with `codex queue`. Cursor and Antigravity have no queue, so
-the result is delivered by one headless turn resumed in the initiating conversation, and delivery
-counts only when the CLI reports that same conversation back (both CLIs silently start a new
-conversation for an unknown ID).
+the result waits in an inbox named by the initiating conversation, and the result hook that setup
+installs adds it to that conversation's next message (hooks/ralph-result-hook.py), whether the
+conversation is open in an interactive session or resumed later.
 """
 import argparse
 import fcntl
@@ -24,12 +24,19 @@ from ralph_runtime import AGENTS, load_agent, record_agent
 
 RUNNERS = {'codex': 'ralph-run-codex.sh', 'cursor': 'ralph-run-cursor.sh',
            'antigravity': 'ralph-run-antigravity.sh'}
-# The option each CLI must offer before a run starts, so a finished run can report back.
-REQUIRED_OPTION = {'cursor': b'--resume', 'antigravity': b'--conversation'}
-DELIVERY_TIMEOUT = 600
-# Cursor and Antigravity have no queue. Resuming the conversation while the turn that started Ralph
-# is still answering would collide with it, so a run that ends quickly waits this long after start.
-DELIVERY_DELAY = 60
+# Resuming the conversation from outside lost the result when that conversation was open in an
+# interactive session, which overwrote it with its next turn. Keep in step with INBOX in
+# hooks/ralph-result-hook.py, which empties these inboxes.
+INBOX = {'cursor': Path.home() / '.cursor' / 'ralph-inbox',
+         'antigravity': Path.home() / '.gemini' / 'antigravity-cli' / 'ralph-inbox'}
+# An inbox entry, also while the hook takes it (.claimed), after it could not read it (.invalid), or
+# after it delivered the result without recording it in the result file (.delivered). Keep in step
+# with ENTRY and CLAIMED in hooks/ralph-result-hook.py; other names are not results.
+INBOX_ENTRY = re.compile(r'(\d{20})-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json'
+                         r'(\.\d+\.claimed|\.invalid|\.delivered)?')
+# The result hook that setup installs; without it a queued result would never leave the inbox.
+RESULT_HOOK = {'cursor': Path.home() / '.cursor/hooks/codex-workstation-bootstrap/ralph-result-hook.py',
+               'antigravity': Path.home() / '.gemini/config/hooks/codex-workstation-bootstrap/ralph-result-hook.py'}
 # Signing Cursor CLI in from the environment; every other session variable below is dropped.
 CURSOR_SIGN_IN_VARIABLE = 'CURSOR_API_KEY'
 # How each CLI lists the model names it accepts; Codex has no such command.
@@ -40,7 +47,7 @@ CURSOR_PARAMETERIZED = re.compile(r'[^\[\]]+\[[^\[\]]+\]')
 
 
 def without_session_variables(environ):
-    """The environment for Cursor and Antigravity runs and deliveries.
+    """The environment for Cursor and Antigravity runs.
 
     The interactive sessions export variables to the shell that started Ralph: the session's identity,
     and credentials such as Cursor's askpass secret, with which an unattended run could ask the user's
@@ -106,7 +113,7 @@ def run_delivery(command, timeout, **options):
 
 def save(path, value):
     temp = path.with_suffix('.tmp')
-    temp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
+    temp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     temp.replace(path)
 
 
@@ -114,7 +121,7 @@ def identity(pid):
     try:
         fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
         return fields[19] if fields[0] != 'Z' else None
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):  # ESRCH while the process is being reaped
         return None
 
 
@@ -123,13 +130,46 @@ def supervisor_alive(state):
         identity(state['supervisor_pid']) == state['supervisor_identity'])
 
 
+def inbox_state(state):
+    """'delivered' when the result hook delivered the run's result without recording it in the result
+    file, 'waiting' while the result is in the inbox (also while the hook takes it, or after it could
+    not read it), and None when neither is there. The supervisor's temporary file does not count."""
+    inbox = INBOX[state['agent']] / state['conversation']
+    try:
+        names = [path.name for path in inbox.iterdir()]
+    except FileNotFoundError:
+        return None
+    found = None
+    for name in names:
+        match = INBOX_ENTRY.fullmatch(name)
+        if match and match.group(2) == state['run_id']:
+            if match.group(3) == '.delivered':
+                return 'delivered'
+            found = 'waiting'
+    return found
+
+
 def status(path):
-    state = json.loads(path.read_text())
+    state = json.loads(path.read_text(encoding='utf-8'))
     if state['status'] in ('starting', 'running') and not supervisor_alive(state):
         state.update(status='monitoring_lost', error='supervisor is not alive; completion is unknown')
     elif state.get('notification') == 'pending' and not supervisor_alive(state):
         state.update(notification='lost',
                      notification_error='the supervisor stopped before it delivered the result')
+    elif state.get('notification') == 'queued' and 'agent' in state:
+        where = inbox_state(state)
+        if where == 'delivered':
+            state.update(notification='delivered',
+                         notification_error='the result hook could not record the delivery in this file')
+        elif where is None and not supervisor_alive(state):
+            # The hook may have recorded the delivery and removed the entry since the file was read.
+            again = json.loads(path.read_text(encoding='utf-8'))
+            if again.get('notification') == 'delivered':
+                return again
+            # The supervisor records queued just before it leaves the result in the inbox; stopped in
+            # between, it left nothing for the result hook.
+            state.update(notification='lost',
+                         notification_error='the supervisor stopped before it left the result in the inbox')
     return state
 
 
@@ -168,55 +208,33 @@ def check_models(agent, executable, models):
                              f'run `{Path(executable).name} models` for the list')
 
 
-def deliver(state, message, log):
-    """Resume the initiating Cursor or Antigravity conversation once with the result."""
-    agent, conversation = state['agent'], state['conversation']
-    if agent == 'cursor':
-        command = [state['executable'], '-p', f'--resume={conversation}', '--trust',
-                   '--workspace', state['project_root'], '--output-format', 'json', message]
-    else:
-        command = [state['executable'], '--conversation', conversation,
-                   '--output-format', 'json', '-p', message]
-    env = without_session_variables(os.environ)
-    env['RALPH_RUN_ACTIVE'] = '1'
-    result = run_delivery(command, DELIVERY_TIMEOUT, cwd=state['project_root'],
-                          stdout=subprocess.PIPE, stderr=log, env=env)
-    log.write(result.stdout)
-    state['notification_exit_code'] = result.returncode
-    if result.returncode != 0:
-        state['notification_error'] = f'{AGENTS[agent]} exited with status {result.returncode}'
-        return 'failed'
+def queue_result(state, state_path, message):
+    """Leave the result in the initiating conversation's inbox for the result hook."""
+    inbox = INBOX[state['agent']] / state['conversation']
+    inbox.mkdir(parents=True, exist_ok=True)
+    # The number prefix keeps a conversation's results in the order their runs ended. WSL steps the
+    # wall clock back by seconds, so a result also sorts after every result still in the inbox.
+    waiting = [int(match.group(1)) for path in inbox.iterdir()
+               if (match := INBOX_ENTRY.fullmatch(path.name))]
+    number = max([time.time_ns(), *(value + 1 for value in waiting)])
+    if number >= 10 ** 20:
+        raise ValueError(f'the results in {inbox} leave no 20-digit number for this one')
+    name = f"{number:020d}-{state['run_id']}.json"
+    temp = inbox / f'.{name}.tmp'
     try:
-        reply = json.loads(result.stdout)
-    except ValueError:
-        state['notification_error'] = f'{AGENTS[agent]} returned invalid JSON'
-        return 'failed'
-    if not isinstance(reply, dict):
-        state['notification_error'] = f'{AGENTS[agent]} returned a non-object reply'
-        return 'failed'
-    if agent == 'cursor':
-        replied = reply.get('session_id')
-        succeeded = reply.get('subtype') == 'success' and reply.get('is_error') is False
-    else:
-        replied = reply.get('conversation_id')
-        succeeded = reply.get('status') == 'SUCCESS'
-    if replied != conversation:
-        state['notification_error'] = f'the result went to conversation {replied!r}, not the initiating one'
-        return 'failed'
-    if not succeeded:
-        state['notification_error'] = f'{AGENTS[agent]} did not finish the result turn successfully'
-        return 'failed'
-    return 'delivered'
+        temp.write_text(json.dumps({'run_id': state['run_id'], 'result_file': str(state_path),
+                                    'message': message}, ensure_ascii=False, indent=2) + '\n',
+                        encoding='utf-8')
+        temp.replace(inbox / name)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def supervise(run_dir, lock_fd, ready_fd):
-    started = time.monotonic()
     state_path = run_dir / 'result.json'
     state = json.loads(state_path.read_text())
     runner = Path(__file__).with_name(RUNNERS[state.get('agent', 'codex')])
     child = None
-    code = None
-    ended = None
     interrupted = False
 
     def stop(signum, frame):
@@ -245,7 +263,6 @@ def supervise(run_dir, lock_fd, ready_fd):
             os.close(ready_fd)
             ready_fd = None
             code = child.wait()
-            ended = time.monotonic()
         status, iterations = outcome(run_dir / 'runner.log', code)
         state.update(status='interrupted' if interrupted else status,
                      exit_code=code, iterations_run=iterations)
@@ -258,39 +275,49 @@ def supervise(run_dir, lock_fd, ready_fd):
     finally:
         if ready_fd is not None:
             os.close(ready_fd)
-    # The run is over: a stop request now ends the supervisor at once instead of waiting and
-    # delivering (run_delivery also stops a delivery in progress). --status then reports the pending
+    # The run is over: a stop request now ends the supervisor at once instead of delivering
+    # (run_delivery also stops a Codex queue call in progress). --status then reports the pending
     # result as lost.
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-    state['notification'] = 'pending'
-    save(state_path, state)
-    message = ('[Ralph result] ' + json.dumps({
+    result = json.dumps({
         'run_id': state['run_id'], 'status': state['status'],
         'exit_code': state.get('exit_code'), 'iterations_run': state.get('iterations_run'),
         'result_file': str(state_path),
-    }, ensure_ascii=False) + '\nRead the result file and summarize it. Do not restart Ralph. '
-               'Read detailed logs only if needed to explain a failure.')
+    }, ensure_ascii=False)
+    if 'agent' in state:
+        # The hook adds this to whatever the user says next, so it asks for the outcome first.
+        message = ('[Ralph result] ' + result + '\nThis Ralph run has ended. Read the result file and '
+                   'tell the user its outcome before answering their message. Do not start another Ralph '
+                   'run because of this result unless the user asks for one. Read detailed logs only if '
+                   'needed to explain a failure.')
+        # The result is marked queued before the hook can take it, so the hook's delivered comes last.
+        state['notification'] = 'queued'
+        save(state_path, state)
+        try:
+            queue_result(state, state_path, message)
+        except Exception as exc:
+            state.update(notification='failed', notification_error=str(exc))
+            save(state_path, state)
+        os.close(lock_fd)
+        return 0 if state['notification'] == 'queued' else 1
+
+    state['notification'] = 'pending'
+    save(state_path, state)
+    message = ('[Ralph result] ' + result + '\nRead the result file and summarize it. Do not restart '
+               'Ralph. Read detailed logs only if needed to explain a failure.')
     try:
         with (run_dir / 'notification.log').open('wb') as log:
-            if 'agent' in state:
-                # A run stopped from the conversation ends while that turn is still answering, so its
-                # result waits from the end; any other result waits from the start of the run.
-                stopped = interrupted or (code is not None and (code < 0 or code >= 128))
-                wait_from = ended if stopped and ended is not None else started
-                time.sleep(max(0.0, DELIVERY_DELAY - (time.monotonic() - wait_from)))
-                state['notification'] = deliver(state, message, log)
-            else:
-                result = run_delivery([state['codex'], 'queue', '--thread', state['thread'],
-                                       '--message', message], 30, stdout=log, stderr=log)
-                state['notification'] = 'queued' if result.returncode == 0 else 'failed'
-                state['notification_exit_code'] = result.returncode
+            result = run_delivery([state['codex'], 'queue', '--thread', state['thread'],
+                                   '--message', message], 30, stdout=log, stderr=log)
+            state['notification'] = 'queued' if result.returncode == 0 else 'failed'
+            state['notification_exit_code'] = result.returncode
     except Exception as exc:
         state.update(notification='failed', notification_error=str(exc))
     save(state_path, state)
     os.close(lock_fd)
-    return 0 if state['notification'] in ('queued', 'delivered') else 1
+    return 0 if state['notification'] == 'queued' else 1
 
 
 def start(args, agent):
@@ -313,11 +340,9 @@ def start(args, agent):
         check = subprocess.run([executable, 'queue', '--help'], capture_output=True, timeout=10)
         if check.returncode != 0 or b'--thread' not in check.stdout:
             raise ValueError('this Codex does not support queue --thread; refusing to start')
-    else:
-        check = subprocess.run([executable, '--help'], capture_output=True, timeout=10)
-        if check.returncode != 0 or REQUIRED_OPTION[agent] not in check.stdout + check.stderr:
-            option = REQUIRED_OPTION[agent].decode()
-            raise ValueError(f'this {AGENTS[agent]} CLI does not support {option}; refusing to start')
+    elif not RESULT_HOOK[agent].is_file():
+        raise ValueError(f'the {AGENTS[agent]} Ralph result hook is not installed: {RESULT_HOOK[agent]}; '
+                         'rerun Downloads/setup-wsl.cmd')
     worker_model, review_model = resolve_models(agent, args.model, args.review_model)
     check_models(agent, executable, (worker_model, review_model))
     logs = ralph / 'logs'

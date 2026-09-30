@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.8.0.0] - 2026-09-30
+
+### Changed
+
+- Ralph results for Cursor CLI and Antigravity CLI now arrive with the next message in the conversation that started the run, through a new result hook, instead of a headless turn resumed from outside. On the workstation, a result resumed into a conversation that was open in an interactive session was lost as soon as the user wrote there again: Cursor rewrote the conversation from the session's state, and agy overwrote the delivered turn with the new one. The supervisor now leaves the result in `~/.cursor/ralph-inbox/<conversation>/` or `~/.gemini/antigravity-cli/ralph-inbox/<conversation>/` and records `notification=queued`; the hook (`beforeSubmitPrompt` in Cursor, `PreInvocation` at the first model call of a turn in agy) adds it to that conversation's next message, whether the conversation is open in an interactive session or resumed later, and records `notification=delivered` once it has handed the result to the CLI. A result leaves the inbox only after the hook has written its output, so a failure can hand it over twice but never lose it. Cursor drops a hook context longer than 10,000 characters, so results that would not fit wait for the following message. A session that was already running when setup installed the hook gets results only after it is restarted. Codex is unchanged (`codex queue`).
+- With the resumed turn gone, so are the one-minute delivery delay, the check of the conversation the CLI reported back, and the need to start Cursor in the project's git top level. The launcher refuses to start when the result hook is not installed. `--status` reports `notification=lost` when the supervisor stopped before it left the result in the inbox.
+- Doctor runs both result hooks in a temporary home (no result waiting, one result delivered once and recorded), and the installers' `--verify` requires their registrations and every managed hook file. Cursor blocks every message when a registered hook's file is missing (`python3` exits 2).
+
+### Fixed
+
+- The Cursor and Antigravity Ralph skills name the runtime record by its place in the skill directory; both agents looked for it in the project first.
+- `--status` no longer fails when it reads the supervisor's `/proc` entry while the process is being reaped (all agents, Codex included), and `result.json` is written as UTF-8 whatever the locale.
+
 ## [0.7.1.0] - 2026-09-30
 
 ### Fixed

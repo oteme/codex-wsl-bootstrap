@@ -133,6 +133,52 @@ check_hook_regression() {
   fi
 }
 
+# check_result_hook LABEL HOOK AGENT: in a temporary home, the Ralph result hook answers {} while no
+# result waits, delivers a queued result once, records it as delivered and takes it out of the
+# inbox. The real inboxes are not touched.
+check_result_hook() {
+  local label="$1" hook="$2" agent="$3" problem
+  if problem="$(python3 - "$hook" "$agent" 2>&1 <<'PY'
+import json, os, subprocess, sys, tempfile, uuid
+from pathlib import Path
+hook, agent = sys.argv[1], sys.argv[2]
+with tempfile.TemporaryDirectory() as home:
+    inbox_root = Path(home, '.cursor/ralph-inbox' if agent == 'cursor' else '.gemini/antigravity-cli/ralph-inbox')
+    conversation, run = str(uuid.uuid4()), str(uuid.uuid4())
+    payload = ({'hook_event_name': 'beforeSubmitPrompt', 'conversation_id': conversation} if agent == 'cursor'
+               else {'invocationNum': 0, 'conversationId': conversation})
+
+    def call():
+        done = subprocess.run(['/usr/bin/python3', '-B', hook, agent], input=json.dumps(payload),
+                              capture_output=True, text=True, env=dict(os.environ, HOME=home), timeout=30)
+        if done.returncode != 0:
+            sys.exit(f'exit {done.returncode}: {done.stderr.strip()[:200]}')
+        return json.loads(done.stdout)
+
+    if call() != {}:
+        sys.exit('it answers something other than {} while no result waits')
+    result_file = Path(home, 'result.json')
+    result_file.write_text(json.dumps({'notification': 'queued'}))
+    inbox = inbox_root / conversation
+    inbox.mkdir(parents=True)
+    message = '[Ralph result] Doctor probe'
+    Path(inbox, f'{1:020d}-{run}.json').write_text(
+        json.dumps({'run_id': run, 'result_file': str(result_file), 'message': message}))
+    expected = {'additional_context': message} if agent == 'cursor' else {'injectSteps': [{'userMessage': message}]}
+    if call() != expected:
+        sys.exit('it does not deliver a queued result')
+    if json.loads(result_file.read_text()).get('notification') != 'delivered' or any(inbox.iterdir()):
+        sys.exit('it does not record the delivery, or leaves the result in the inbox')
+    if call() != {}:
+        sys.exit('it delivers a result twice')
+PY
+)"; then
+    pass "$label Ralph result hook"
+  else
+    fail "$label Ralph result hook does not work: $hook (${problem##*$'\n'})"
+  fi
+}
+
 # check_hook_registration LABEL COMMAND...: COMMAND is an installer run with --verify.
 check_hook_registration() {
   local label="$1" output
@@ -203,6 +249,7 @@ check_cursor_home() {
   else
     fail "Cursor guidance hook does not return the shared guidance"
   fi
+  check_result_hook "Cursor" "$managed/ralph-result-hook.py" cursor
   check_hook_regression "$managed/test.sh" "Cursor RTK Safe Hook regression"
   check_chrome_servers "$cursor_dir/mcp.json" "Cursor"
   check_skill ralph-run-cursor "$cursor_dir/skills" "Cursor "
@@ -222,6 +269,7 @@ check_antigravity_home() {
   check_hook_registration "Antigravity" python3 "$(dirname "${BASH_SOURCE[0]}")/scripts/install-antigravity.py" \
     --gemini-dir "$gemini_dir" --codex-skills-dir "$(realpath -m "$SKILLS_DIR")" \
     --hook-source-dir "$(dirname "${BASH_SOURCE[0]}")/hooks" --verify
+  check_result_hook "Antigravity" "$managed/ralph-result-hook.py" antigravity
   check_hook_regression "$managed/test.sh" "Antigravity RTK Safe Hook regression"
   # Antigravity's own skills directory comes first, so its ralph-run keeps a place in the skill
   # descriptions Antigravity shows the model.

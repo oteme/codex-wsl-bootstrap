@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Exercise real detached processes with fake work and fake Codex queue (no model calls)."""
+"""Exercise real detached processes with fake work, a fake Codex queue, fake Cursor and agy CLIs and
+the result hook (no model calls)."""
+import ctypes
 import json
 import fcntl
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -52,13 +55,17 @@ if os.environ.get('FAKE_GROUP'):
 """
 # How ralph-notify.py gives `codex queue` its fixed 30 seconds.
 QUEUE_TIMEOUT = "'--message', message], 30,"
+# prctl(2) option that gives this process the orphans among its descendants.
+PR_SET_CHILD_SUBREAPER = 36
 
 
-def without_delivery_delay(script, delay=0):
-    """Let a copied launcher deliver after DELAY seconds instead of the production minute."""
-    text = script.read_text()
-    assert text.count('DELIVERY_DELAY = 60\n') == 1
-    script.write_text(text.replace('DELIVERY_DELAY = 60\n', f'DELIVERY_DELAY = {delay}\n'))
+def adopt_orphans(enabled):
+    """Make this process the parent of the orphans among its descendants, such as the supervisor a
+    launcher leaves behind, so that a test can reap one and read its exit status; or stop doing so."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_SET_CHILD_SUBREAPER, int(enabled), 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
 
 
 def isolated_env(root, **extra):
@@ -80,10 +87,11 @@ def recorded_environ(path):
 
 
 def alive(pid, identity):
-    """Whether PID is still the running process with this /proc start time, as ralph-notify.py checks."""
+    """Whether PID is still the running process with this /proc start time, as ralph-notify.py checks.
+    Reading the stat of a process that is reaped meanwhile fails with ESRCH, not ENOENT."""
     try:
         fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return False
     return fields[0] != 'Z' and fields[19] == identity
 
@@ -110,6 +118,22 @@ class SupervisorTestCase(unittest.TestCase):
     def wait_for_exit(self, state, deadline):
         """Wait until the supervisor recorded in STATE has exited; fail if it runs past DEADLINE."""
         while alive(state['supervisor_pid'], state['supervisor_identity']):
+            if time.monotonic() > deadline:
+                self.fail('the supervisor is still running')
+            time.sleep(0.01)
+
+    def adopt_supervisors(self):
+        """Adopt the supervisors that this test's launchers leave behind, for exit_status()."""
+        adopt_orphans(True)
+        self.addCleanup(adopt_orphans, False)
+
+    def exit_status(self, run):
+        """The exit status of RUN's supervisor, adopted with adopt_supervisors(), once it has exited."""
+        deadline = time.monotonic() + 10
+        while True:
+            pid, status = os.waitpid(run['supervisor_pid'], os.WNOHANG)
+            if pid:
+                return os.waitstatus_to_exitcode(status)
             if time.monotonic() > deadline:
                 self.fail('the supervisor is still running')
             time.sleep(0.01)
@@ -466,63 +490,137 @@ else:
         self.assertFalse((self.root / 'queue.jsonl').exists())
 
 
-
 CONVERSATION = '22222222-2222-4222-8222-222222222222'
-# A fake Cursor or agy CLI. It answers --help, and for a result delivery it records its arguments,
-# RALPH_RUN_ACTIVE, its whole environment and when it was called, runs DELIVERY_GROUP, sleeps
-# FAKE_DELAY seconds, then prints the reply configured by the test. The time is on the monotonic
-# clock, which every process shares: WSL steps the wall clock back by seconds, and the supervisor
-# times the delay on the monotonic clock as well.
+OTHER_CONVERSATION = '33333333-3333-4333-8333-333333333333'
+HOOK = Path(__file__).resolve().parents[1] / 'hooks/ralph-result-hook.py'
+# Where a Cursor or Antigravity supervisor leaves results, under HOME (INBOX in ralph-notify.py).
+INBOX = {'cursor': Path('.cursor/ralph-inbox'),
+         'antigravity': Path('.gemini/antigravity-cli/ralph-inbox')}
+# What follows the summary of the run in a Cursor or Antigravity result message.
+AGENT_INSTRUCTIONS = ('\nThis Ralph run has ended. Read the result file and tell the user its outcome '
+                      'before answering their message. Do not start another Ralph run because of this '
+                      'result unless the user asks for one. Read detailed logs only if needed to explain a '
+                      'failure.')
+LOST_BEFORE_THE_INBOX = 'the supervisor stopped before it left the result in the inbox'
+NOT_RECORDED = 'the result hook could not record the delivery in this file'
+# Where setup installs the result hook, under HOME (RESULT_HOOK in ralph-notify.py).
+RESULT_HOOK = {'cursor': Path('.cursor/hooks/codex-workstation-bootstrap/ralph-result-hook.py'),
+               'antigravity': Path('.gemini/config/hooks/codex-workstation-bootstrap/ralph-result-hook.py')}
+# The lines of ralph-notify.py around which a test stops the supervisor or fails a step: leaving the
+# result in the inbox (after notification=queued is saved), and publishing the entry there.
+QUEUE_CALL = '            queue_result(state, state_path, message)\n'
+ENTRY_PUBLISHED = '        temp.replace(inbox / name)\n'
+# A fake Cursor or agy CLI that lists models and records the arguments of every call. The launcher only
+# lists models; once a run is over, nothing may call the CLI.
 FAKE_AGENT = r"""#!/usr/bin/env python3
-import json, os, sys, time
+import json, os, sys
 args = sys.argv[1:]
-agent = os.environ['FAKE_AGENT_KIND']
+with open(os.environ['AGENT_CALLS'], 'a') as stream:
+    stream.write(json.dumps(args) + '\n')
 if args == ['models']:
-    if agent == 'cursor':
+    if os.environ['FAKE_AGENT_KIND'] == 'cursor':
         print('Available models\n\nauto - Auto (current, default)\nmodel-a - Model A\nmodel-b - Model B')
     else:
         print('model-a\tModel A\nmodel-b\tModel B')
     sys.exit(int(os.environ.get('FAKE_MODELS_EXIT', '0')))
-if args == ['--help']:
-    text = '--resume' if agent == 'cursor' else '--conversation'
-    text = os.environ.get('FAKE_HELP', text)
-    print(text, file=sys.stdout if agent == 'cursor' else sys.stderr)
-    sys.exit(0)
-with open(os.environ['DELIVERY_CALLS'], 'a') as stream:
-    stream.write(json.dumps({'args': args, 'active': os.environ.get('RALPH_RUN_ACTIVE'),
-                             'cwd': os.getcwd(), 'at': time.monotonic(),
-                             'env': dict(os.environ)}) + '\n')
-""" + DELIVERY_GROUP + r"""time.sleep(float(os.environ.get('FAKE_DELAY', '0')))
-reply = os.environ.get('FAKE_REPLY')
-if reply is None:
-    conversation = os.environ.get('FAKE_REPLY_CONVERSATION', '""" + CONVERSATION + r"""')
-    if agent == 'cursor':
-        reply = json.dumps({'type': 'result', 'subtype': 'success',
-                            'is_error': os.environ.get('FAKE_UNSUCCESSFUL') == '1',
-                            'session_id': conversation, 'result': 'summary'})
-    else:
-        reply = json.dumps({'conversation_id': conversation,
-                            'status': 'ERROR' if os.environ.get('FAKE_UNSUCCESSFUL') == '1' else 'SUCCESS',
-                            'response': 'summary'})
-print(reply)
-sys.exit(int(os.environ.get('FAKE_EXIT', '0')))
+sys.exit(97)
 """
+# Runs `ralph-notify.py --status RESULT` (arguments: the script, RESULT) while every read under /proc
+# fails as it does for a process that is being reaped (ESRCH).
+REAPED_WHILE_READ = r'''
+import pathlib, runpy, sys
+script, result = sys.argv[1:]
+read_text = pathlib.Path.read_text
+def reaped(self, *args, **kwargs):
+    if str(self).startswith('/proc/'):
+        raise ProcessLookupError(3, 'No such process')
+    return read_text(self, *args, **kwargs)
+pathlib.Path.read_text = reaped
+sys.path.insert(0, str(pathlib.Path(script).parent))
+sys.argv = [script, '--status', result]
+runpy.run_path(script, run_name='__main__')
+'''
+# Runs `ralph-notify.py --status RESULT` (arguments: the script, RESULT) as if the result hook recorded
+# the delivery in RESULT, and removed the entry, just after --status first read RESULT.
+DELIVERED_MEANWHILE = r'''
+import json, pathlib, runpy, sys
+script, result = sys.argv[1:]
+iterdir = pathlib.Path.iterdir
+def delivered_first(self):
+    state = json.loads(pathlib.Path(result).read_text())
+    if self.name == state['conversation']:
+        pathlib.Path(result).write_text(json.dumps({**state, 'notification': 'delivered'}))
+    return iterdir(self)
+pathlib.Path.iterdir = delivered_first
+sys.path.insert(0, str(pathlib.Path(script).parent))
+sys.argv = [script, '--status', result]
+runpy.run_path(script, run_name='__main__')
+'''
+# The listings of the caller's own inboxes for the fixture conversations. Every launcher and hook call
+# in these tests gets a temporary HOME, so no test may change them (tearDownModule).
+REAL_INBOXES = {}
+
+
+def real_inbox_listing(path):
+    return sorted(os.listdir(path)) if path.exists() else None
+
+
+def setUpModule():
+    REAL_INBOXES.update({path: real_inbox_listing(path) for path in (
+        Path.home() / inbox / conversation for inbox in INBOX.values()
+        for conversation in (CONVERSATION, OTHER_CONVERSATION))})
+
+
+def tearDownModule():
+    changed = [str(path) for path, listing in REAL_INBOXES.items() if real_inbox_listing(path) != listing]
+    if changed:
+        raise AssertionError('the tests changed the real inboxes ' + ', '.join(changed))
+
+
+def agent_message(state, result_file):
+    """The message a Cursor or Antigravity supervisor leaves for the run recorded in STATE."""
+    return '[Ralph result] ' + json.dumps({
+        'run_id': state['run_id'], 'status': state['status'], 'exit_code': state['exit_code'],
+        'iterations_run': state['iterations_run'], 'result_file': result_file,
+    }, ensure_ascii=False) + AGENT_INSTRUCTIONS
+
+
+def added(agent, messages):
+    """What the result hook prints to add MESSAGES to the conversation's next message."""
+    if agent == 'cursor':
+        return {'additional_context': '\n\n'.join(messages)}
+    return {'injectSteps': [{'userMessage': message} for message in messages]}
+
+
+def stopped_at(script, line, after=False):
+    """Make the supervisor of a copied launcher kill itself just before (or after) LINE, as a stop
+    request or a crash could end it there."""
+    text = script.read_text()
+    assert text.count(line) == 1, line
+    kill = line[:len(line) - len(line.lstrip())] + 'os.kill(os.getpid(), signal.SIGKILL)\n'
+    script.write_text(text.replace(line, line + kill if after else kill + line))
+
+
+def failing_at(script, line):
+    """Make the supervisor of a copied launcher fail with an I/O error just before LINE."""
+    text = script.read_text()
+    assert text.count(line) == 1, line
+    error = line[:len(line) - len(line.lstrip())] + "raise OSError(5, 'injected failure')\n"
+    script.write_text(text.replace(line, error + line))
 
 
 class AgentNotifyTests(SupervisorTestCase):
-    """The Cursor and Antigravity supervisors deliver the result by resuming the conversation."""
+    """The Cursor and Antigravity supervisors leave the result in the initiating conversation's inbox,
+    where the result hook adds it to that conversation's next message."""
 
     AGENTS = {'cursor': 'ralph-run-cursor.sh', 'antigravity': 'ralph-run-antigravity.sh'}
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
+        self.home = self.root / 'home'  # HOME in isolated_env()
         self.project = self.root / 'project'
-        self.ralph = self.project / 'scripts/ralph'
-        self.ralph.mkdir(parents=True)
-        subprocess.run(['git', 'init', '-q', str(self.project)], check=True)
-        (self.ralph / 'prd.json').write_text('{}')
-        (self.ralph / 'CLAUDE.md').write_text('fixture')
+        self.ralph = self.ralph_dir(self.project)
         self.runs = []
 
     def tearDown(self):
@@ -535,13 +633,23 @@ class AgentNotifyTests(SupervisorTestCase):
         self.tearDown()
         self.setUp()
 
-    def install(self, agent, footer='completed=1\niterationsRun=1\nmaxIterations=10', runner=None,
-                delay=0):
+    def ralph_dir(self, project):
+        """The Ralph directory of a new git project at PROJECT."""
+        ralph = project / 'scripts/ralph'
+        ralph.mkdir(parents=True)
+        subprocess.run(['git', 'init', '-q', str(project)], check=True)
+        (ralph / 'prd.json').write_text('{}')
+        (ralph / 'CLAUDE.md').write_text('fixture')
+        return ralph
+
+    def install(self, agent, runner=None):
+        """Install a copy of the launcher as AGENT's Ralph skill, with a fake CLI and RUNNER. The default
+        runner completes a run, once the file RUNNER_GATE exists if that is set (within 30 seconds), and
+        saves the models it got in RUNNER_ENV."""
         skill = self.root / f'skill-{agent}'
         scripts = skill / 'scripts'
         scripts.mkdir(parents=True)
         shutil.copyfile(SOURCE, scripts / SOURCE.name)
-        without_delivery_delay(scripts / SOURCE.name, delay)
         shutil.copyfile(SOURCE.with_name('ralph_runtime.py'), scripts / 'ralph_runtime.py')
         shutil.copyfile(SOURCE.with_name('ralph_models.py'), scripts / 'ralph_models.py')
         cli = self.root / f'fake-{agent}'
@@ -549,21 +657,31 @@ class AgentNotifyTests(SupervisorTestCase):
         cli.chmod(0o755)
         (scripts / f'{agent}-runtime.json').write_text(json.dumps(
             {'schema': 1, agent: str(cli), 'setup_version': 'fixture'}))
-        (scripts / self.AGENTS[agent]).write_text(runner or (
-            "#!/bin/bash\nprintf 'PRIVATE_WORKER_LOG\\n'\n"
-            'printf "%s|%s" "${RALPH_MODEL:-}" "${RALPH_REVIEW_MODEL:-}" > "$RUNNER_ENV"\n'
-            "cat <<'EOF'\n" + footer
-            + '\nprogress=/fixture/progress.txt\nlogs=/fixture/logs\nEOF\n'))
+        self.install_result_hook(agent)
+        (scripts / self.AGENTS[agent]).write_text(runner or fake_runner(
+            'for _ in {1..1500}; do\n'
+            '  [[ -z "${RUNNER_GATE:-}" || -e "$RUNNER_GATE" ]] && break\n'
+            '  sleep 0.02\n'
+            'done\n'
+            "printf 'PRIVATE_WORKER_LOG\\n'\n"
+            'printf "%s|%s" "${RALPH_MODEL:-}" "${RALPH_REVIEW_MODEL:-}" > "$RUNNER_ENV"\n'))
         self.env = self.agent_env(agent)
         return scripts / SOURCE.name
+
+    def install_result_hook(self, agent):
+        """Install the result hook where setup puts it for AGENT, which start() requires."""
+        installed = self.home / RESULT_HOOK[agent]
+        installed.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(HOOK, installed)
+        return installed
 
     def agent_env(self, agent):
         """The isolated launcher environment for a skill of this agent, with its fake CLI's variables."""
         return isolated_env(self.root, FAKE_AGENT_KIND=agent,
-                            DELIVERY_CALLS=str(self.root / 'delivery.jsonl'))
+                            AGENT_CALLS=str(self.root / 'agent-calls.jsonl'))
 
-    def launch(self, script, *extra, conversation=CONVERSATION):
-        args = [sys.executable, str(script), '--ralph-dir', str(self.ralph), *extra]
+    def launch(self, script, *extra, conversation=CONVERSATION, ralph=None):
+        args = [sys.executable, str(script), '--ralph-dir', str(ralph or self.ralph), *extra]
         if conversation is not None:
             args[2:2] = ['--conversation', conversation]
         result = subprocess.run(args, env=self.env, capture_output=True, text=True, timeout=30)
@@ -571,192 +689,451 @@ class AgentNotifyTests(SupervisorTestCase):
             self.runs.append(json.loads(result.stdout))
         return result
 
-    def wait(self, run):
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            state = json.loads(Path(run['result_file']).read_text())
-            if state['notification'] in ('delivered', 'failed'):
-                return state
-            time.sleep(0.02)
-        self.fail('supervisor failed to finish')
+    def wait(self, run, timeout=10):
+        """RUN's result file once its supervisor has exited; nothing is left to wait for after the run."""
+        self.wait_for_exit(json.loads(Path(run['result_file']).read_text()), time.monotonic() + timeout)
+        return json.loads(Path(run['result_file']).read_text())
 
     def calls(self):
-        path = self.root / 'delivery.jsonl'
+        """The arguments of every call of the fake CLI so far."""
+        path = self.root / 'agent-calls.jsonl'
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
-    def pending(self, run):
-        """The state once the run is over and its result waits to be delivered."""
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            state = json.loads(Path(run['result_file']).read_text())
-            if state['notification'] == 'pending':
-                return state
-            time.sleep(0.02)
-        self.fail('the run did not end')
+    def inbox(self, agent, conversation=CONVERSATION):
+        return self.home / INBOX[agent] / conversation
 
-    def test_result_is_delivered_to_the_initiating_conversation(self):
+    def entry(self, agent, run):
+        """RUN's entry, the only file in the conversation's inbox, named by its end time and the run."""
+        files = list(self.inbox(agent).iterdir())
+        self.assertEqual(len(files), 1, files)
+        self.assertRegex(files[0].name, r'^\d{20}-' + re.escape(run['run_id']) + r'\.json$')
+        return files[0]
+
+    def run_hook(self, agent, conversation=CONVERSATION):
+        """Run the installed result hook as the CLI does before CONVERSATION's next message."""
+        payload = ({'hook_event_name': 'beforeSubmitPrompt', 'conversation_id': conversation}
+                   if agent == 'cursor' else {'invocationNum': 0, 'conversationId': conversation})
+        return subprocess.run(['/usr/bin/python3', '-B', str(self.home / RESULT_HOOK[agent]), agent],
+                              input=json.dumps(payload), env=self.env, capture_output=True, text=True,
+                              timeout=30)
+
+    def hook(self, agent, conversation=CONVERSATION):
+        """What the result hook adds to CONVERSATION's next message; the call must succeed quietly."""
+        result = self.run_hook(agent, conversation)
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        return json.loads(result.stdout)
+
+    def test_a_finished_run_leaves_its_result_in_the_conversations_inbox(self):
+        """However the run ends, the supervisor records notification=queued, leaves one entry with the
+        result message in the initiating conversation's inbox under HOME, calls no CLI to deliver it,
+        exits 0 and frees the Ralph directory."""
+        endings = {
+            'completed': (None, None, ('completed', 0, 1)),
+            'failed': ('#!/bin/bash\nprintf "PRIVATE_WORKER_LOG\\n"\nexit 7\n', None, ('failed', 7, None)),
+            # A stop request ends the runner's process group; bash dies of the signal.
+            'interrupted': ('#!/bin/bash\nsleep 30\n', signal.SIGTERM,
+                            ('interrupted', -signal.SIGTERM, None)),
+        }
+        self.adopt_supervisors()
+        for agent in self.AGENTS:
+            other = next(name for name in self.AGENTS if name != agent)
+            for ending, (runner, stop, outcome) in endings.items():
+                with self.subTest(agent=agent, ending=ending):
+                    self.reset()
+                    script = self.install(agent, runner)
+                    result = self.launch(script)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    run = json.loads(result.stdout)
+                    if stop:
+                        os.kill(run['supervisor_pid'], stop)
+                    self.assertEqual(self.exit_status(run), 0)
+                    state = self.wait(run)
+                    self.assertEqual((state['status'], state['exit_code'], state['iterations_run']), outcome)
+                    self.assertEqual(state['notification'], 'queued', state)
+                    self.assertNotIn('notification_error', state)
+                    self.assertEqual((state['agent'], state['conversation']), (agent, CONVERSATION))
+                    self.assertNotIn('thread', state)
+                    entry = self.entry(agent, run)
+                    self.assertEqual(json.loads(entry.read_text()), {
+                        'run_id': run['run_id'], 'result_file': run['result_file'],
+                        'message': agent_message(state, run['result_file'])})
+                    self.assertNotIn('PRIVATE_WORKER_LOG', entry.read_text())
+                    # Nothing else in the inboxes: no temporary file, no other conversation or agent.
+                    inboxes = self.home / INBOX[agent]
+                    self.assertEqual(sorted(path.relative_to(inboxes) for path in inboxes.rglob('*')),
+                                     [Path(CONVERSATION), Path(CONVERSATION, entry.name)])
+                    self.assertFalse((self.home / INBOX[other]).exists())
+                    self.assertEqual(self.calls(), [])
+                    self.wait_until_released(time.monotonic())
+                    self.assertEqual(self.report(script, run)['notification'], 'queued')
+
+    def test_the_next_run_starts_once_the_supervisor_has_queued_the_result(self):
+        """Nothing waits for the conversation after a run: once its supervisor has left the result and
+        exited, the next run in the Ralph directory starts, and its result sorts after the first."""
         for agent in self.AGENTS:
             with self.subTest(agent=agent):
                 self.reset()
                 script = self.install(agent)
-                result = self.launch(script)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                state = self.wait(json.loads(result.stdout))
-                self.assertEqual(state['status'], 'completed')
-                self.assertEqual(state['notification'], 'delivered', state)
-                self.assertEqual((state['agent'], state['conversation']), (agent, CONVERSATION))
-                self.assertNotIn('thread', state)
-                calls = self.calls()
-                self.assertEqual(len(calls), 1)
-                args, message = calls[0]['args'], calls[0]['args'][-1]
-                self.assertTrue(message.startswith('[Ralph result] '))
-                self.assertNotIn('PRIVATE_WORKER_LOG', message)
-                self.assertEqual(calls[0]['active'], '1')
-                self.assertEqual(calls[0]['cwd'], str(self.project))
-                if agent == 'cursor':
-                    self.assertEqual(args[:-1], ['-p', f'--resume={CONVERSATION}', '--trust',
-                                                 '--workspace', str(self.project),
-                                                 '--output-format', 'json'])
-                else:
-                    self.assertEqual(args[:-1], ['--conversation', CONVERSATION,
-                                                 '--output-format', 'json', '-p'])
-                self.assertNotIn('--force', args)
-                self.assertNotIn('--dangerously-skip-permissions', args)
-                self.wait(json.loads(result.stdout))
+                first = json.loads(self.launch(script).stdout)
+                self.wait(first)
+                second = self.launch(script)
+                self.assertEqual(second.returncode, 0, second.stderr)
+                second = json.loads(second.stdout)
+                self.wait(second)
+                self.assertEqual([path.name[21:] for path in sorted(self.inbox(agent).iterdir())],
+                                 [f"{first['run_id']}.json", f"{second['run_id']}.json"])
 
-    def test_failed_delivery_is_durable_without_retry(self):
-        cases = {
-            'another conversation': {'FAKE_REPLY_CONVERSATION': '33333333-3333-4333-8333-333333333333'},
-            'unsuccessful turn': {'FAKE_UNSUCCESSFUL': '1'},
-            'exit status': {'FAKE_EXIT': '5'},
-            'invalid reply': {'FAKE_REPLY': 'not json'},
-            'non-object reply': {'FAKE_REPLY': '[]'},
-        }
-        for agent in self.AGENTS:
-            for name, env in cases.items():
-                with self.subTest(agent=agent, case=name):
-                    self.reset()
-                    script = self.install(agent)
-                    self.env.update(env)
-                    result = self.launch(script)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    state = self.wait(json.loads(result.stdout))
-                    self.assertEqual(state['status'], 'completed')
-                    self.assertEqual(state['notification'], 'failed')
-                    self.assertTrue(state['notification_error'])
-                    self.assertEqual(len(self.calls()), 1)
-
-    def test_a_quick_run_waits_before_resuming_the_conversation(self):
+    def test_results_of_one_conversation_arrive_in_the_order_their_runs_ended(self):
+        """Two Ralph directories started from the same conversation: the run started first ends last,
+        so its result sorts after the other's, and the result hook adds it after the other."""
         for agent in self.AGENTS:
             with self.subTest(agent=agent):
                 self.reset()
-                script = self.install(agent, delay=2)
-                started = time.monotonic()
-                state = self.wait(json.loads(self.launch(script).stdout))
-                self.assertEqual(state['notification'], 'delivered', state)
-                self.assertGreaterEqual(time.monotonic() - started, 2)
-                # The conversation itself is resumed only after the delay, not just the state saved.
-                calls = self.calls()
-                self.assertEqual(len(calls), 1)
-                self.assertGreaterEqual(calls[0]['at'] - started, 2)
+                script = self.install(agent)
+                gate = self.root / 'gate'
+                self.env['RUNNER_GATE'] = str(gate)
+                slow = json.loads(self.launch(script).stdout)
+                del self.env['RUNNER_GATE']
+                try:
+                    quick = self.launch(script, ralph=self.ralph_dir(self.root / 'other project'))
+                    self.assertEqual(quick.returncode, 0, quick.stderr)
+                    quick = json.loads(quick.stdout)
+                    ended = [self.wait(quick)]
+                finally:
+                    gate.touch()  # Only now does the run started first end.
+                ended.append(self.wait(slow))
+                messages = [agent_message(state, run['result_file'])
+                            for state, run in zip(ended, (quick, slow))]
+                entries = sorted(self.inbox(agent).iterdir())
+                self.assertEqual([entry.name[21:] for entry in entries],
+                                 [f"{quick['run_id']}.json", f"{slow['run_id']}.json"])
+                self.assertEqual([json.loads(entry.read_text())['message'] for entry in entries], messages)
+                self.assertEqual(self.hook(agent), added(agent, messages))
+                for run in (quick, slow):
+                    self.assertEqual(self.report(script, run)['notification'], 'delivered')
 
-    def test_a_stopped_run_waits_the_delay_from_its_end(self):
-        """A run stopped from the conversation ends while that turn is still answering, so even a run
-        that outlasted DELIVERY_DELAY waits it again from the moment it was stopped. A SIGTERM to the
-        supervisor during the run still stops the runner, marks the run interrupted and delivers."""
-        delay = 1
-        # (agent, what the test signals, the runner's own SIGTERM handling, the signal, run status)
-        cases = [('cursor', 'supervisor', '', signal.SIGTERM, 'interrupted'),
-                 # Stopped by the request alone: the runner exits with an ordinary status.
-                 ('antigravity', 'supervisor', "trap 'exit 1' TERM\n", signal.SIGTERM, 'interrupted'),
-                 # A runner killed by a signal, or reporting one as 128+n, was stopped as well.
-                 ('cursor', 'runner', '', signal.SIGKILL, 'failed'),
-                 ('antigravity', 'runner', "trap 'exit 143' TERM\n", signal.SIGTERM, 'failed')]
-        for agent, target, trap, signum, expected in cases:
-            with self.subTest(agent=agent, target=target, signal=signum.name, trap=trap.strip()):
-                self.reset()
-                script = self.install(agent, delay=delay, runner=f'#!/bin/bash\n{trap}sleep 30\n')
-                run = json.loads(self.launch(script).stdout)
-                time.sleep(delay + 0.3)
-                state = json.loads(Path(run['result_file']).read_text())
-                stopped = time.monotonic()
-                if target == 'supervisor':
-                    os.kill(run['supervisor_pid'], signum)
-                else:
-                    os.killpg(state['runner_pid'], signum)
-                self.assertEqual(state['status'], 'running')  # The run outlasted the delay.
-                state = self.wait(run)
-                self.assertEqual(state['status'], expected)
-                self.assertNotEqual(state['exit_code'], 0)
-                self.assertEqual(state['notification'], 'delivered', state)
-                calls = self.calls()
-                self.assertEqual(len(calls), 1)
-                self.assertGreaterEqual(calls[0]['at'] - stopped, delay)
-
-    def test_a_run_that_outlasts_the_delay_is_delivered_without_waiting_again(self):
-        """Only a stopped run waits from its end; a run that ends by itself after DELIVERY_DELAY has
-        passed is delivered at once."""
-        delay = 2
-        script = self.install('antigravity', delay=delay, runner=fake_runner(
-            f'sleep {delay + 0.5}\n'
-            "python3 -c 'import time; print(time.monotonic())' > \"$RUNNER_ENDED\"\n"))
-        self.env['RUNNER_ENDED'] = str(self.root / 'runner-ended')
-        state = self.wait(json.loads(self.launch(script).stdout))
-        self.assertEqual(state['status'], 'completed')
-        self.assertEqual(state['notification'], 'delivered', state)
-        calls = self.calls()
-        self.assertEqual(len(calls), 1)
-        self.assertLess(calls[0]['at'] - float((self.root / 'runner-ended').read_text()), delay)
-
-    def test_a_stop_after_the_run_ends_the_supervisor_without_delivery(self):
-        """Once the runner has exited, SIGTERM or SIGINT ends the supervisor at once instead of letting
-        it wait out DELIVERY_DELAY and deliver; --status then reports the result as lost."""
+    def test_a_result_sorts_after_every_result_still_in_the_inbox(self):
+        """WSL steps the wall clock back by seconds, so a result is numbered after every result still in
+        the inbox, whether waiting, being taken or kept as unreadable, even one numbered ahead of the
+        clock. The supervisor's unpublished temporary files do not count."""
+        ahead = time.time_ns() + 10 ** 12  # about 17 minutes ahead of the clock
+        earlier = '55555555-5555-4555-8555-555555555555'
+        lettered = 'abcdef01-2345-4678-9abc-def012345678'  # upper case makes it no run ID
+        cases = {
+            'waiting': ([f'{ahead:020d}-{earlier}.json'], ahead + 1),
+            'being taken': ([f'{ahead:020d}-{earlier}.json',
+                             f'{ahead + 5:020d}-{earlier}.json.{os.getpid()}.claimed'], ahead + 6),
+            'kept as unreadable': ([f'{ahead + 9:020d}-{earlier}.json.invalid'], ahead + 10),
+            'a temporary file': ([f'{ahead:020d}-{earlier}.json', f'.{ahead + 100:020d}-{earlier}.json.tmp'],
+                                 ahead + 1),
+            'names that are not results': ([f'{ahead:020d}-{earlier}.json', '1' * 21 + '-notes.txt',
+                                            '²3-notes.txt', f'{ahead + 7:020d}-{lettered.upper()}.json',
+                                            f'{ahead + 8:020d}-{earlier}.json.backup',
+                                            f'{ahead + 9:020d}-{earlier}.json.x.claimed'], ahead + 1),
+        }
         for agent in self.AGENTS:
-            for signum in (signal.SIGTERM, signal.SIGINT):
-                with self.subTest(agent=agent, signal=signum.name):
-                    self.reset()
-                    script = self.install(agent, delay=3)
-                    run = json.loads(self.launch(script).stdout)
-                    state = self.pending(run)
-                    self.assertEqual(state['status'], 'completed')
-                    self.assertEqual(self.report(script, run)['notification'], 'pending')
-                    # The finished run holds the Ralph directory until it has delivered its result.
-                    second = self.launch(script)
-                    self.assertNotEqual(second.returncode, 0)
-                    self.assertIn(ALREADY_ACTIVE, second.stderr)
-                    signalled = time.monotonic()
-                    os.kill(run['supervisor_pid'], signum)
-                    self.wait_for_exit(state, signalled + 1.5)
-                    self.runs.remove(run)  # Nothing is left to wait for.
-                    self.assertEqual(self.calls(), [])
-                    saved = json.loads(Path(run['result_file']).read_text())
-                    self.assertEqual(saved['notification'], 'pending')
-                    reported = self.report(script, run)
-                    self.assertEqual((reported['status'], reported['notification']),
-                                     ('completed', 'lost'))
-                    self.assertTrue(reported['notification_error'])
-
-    def test_a_stop_during_delivery_ends_the_cli_and_its_children_first(self):
-        """A SIGTERM or SIGINT to the supervisor while the CLI resumes the conversation stops that CLI
-        and every process it started, and waits for them, before the supervisor exits and frees the
-        Ralph directory; the result stays pending, which --status reports as lost."""
-        for agent in self.AGENTS:
-            for signum in (signal.SIGTERM, signal.SIGINT):
-                with self.subTest(agent=agent, signal=signum.name):
+            for case, (names, number) in cases.items():
+                with self.subTest(agent=agent, case=case):
                     self.reset()
                     script = self.install(agent)
-                    group = self.root / 'delivery-group.json'
-                    self.env.update(FAKE_DELAY='3', FAKE_GROUP=str(group))
-                    result = self.launch(script)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    run = json.loads(result.stdout)
-                    self.assert_stop_ends_delivery(script, run, self.delivery_group(group), signum)
-                    self.assertEqual(len(self.calls()), 1)
+                    result_file = self.root / 'earlier-result.json'
+                    result_file.write_text(json.dumps({'run_id': earlier, 'notification': 'queued'}))
+                    inbox = self.inbox(agent)
+                    inbox.mkdir(parents=True)
+                    entry = {'run_id': earlier, 'result_file': str(result_file),
+                             'message': 'an earlier result'}
+                    for name in names:
+                        (inbox / name).write_text(json.dumps(entry))
+                    run = json.loads(self.launch(script).stdout)
+                    state = self.wait(run)
+                    self.assertEqual(sorted(path.name for path in inbox.iterdir()),
+                                     sorted([*names, f"{number:020d}-{run['run_id']}.json"]))
+                    if case == 'waiting':
+                        self.assertEqual(self.hook(agent), added(agent, [
+                            'an earlier result', agent_message(state, run['result_file'])]))
 
-    def test_the_initiating_session_reaches_neither_the_runner_nor_the_delivery(self):
-        """Cursor and Antigravity export the initiating session's identity and credentials to the
-        shell that starts Ralph; the runner and the result delivery get the rest of the environment
-        without any CURSOR_* or ANTIGRAVITY_* variable or SUDO_ASKPASS, but with CURSOR_API_KEY."""
+    def test_the_result_hook_adds_the_result_to_the_conversations_next_message(self):
+        for agent in self.AGENTS:
+            with self.subTest(agent=agent):
+                self.reset()
+                script = self.install(agent)
+                run = json.loads(self.launch(script).stdout)
+                queued = self.wait(run)
+                message = json.loads(self.entry(agent, run).read_text())['message']
+                self.assertEqual(self.hook(agent, OTHER_CONVERSATION), {})
+                self.assertEqual(self.hook(agent), added(agent, [message]))
+                self.assertEqual(json.loads(Path(run['result_file']).read_text()),
+                                 {**queued, 'notification': 'delivered'})
+                self.assertEqual(list(self.inbox(agent).iterdir()), [])
+                self.assertEqual(self.report(script, run)['notification'], 'delivered')
+                self.assertEqual(self.hook(agent), {})
+
+    def test_a_result_the_inbox_cannot_take_is_recorded_as_failed(self):
+        """When the result cannot be left in the inbox, because a file stands where the conversation's
+        inbox belongs or because no 20-digit number sorts after the results already there, the
+        supervisor records notification=failed with the error, tries nothing else and exits 1."""
+        last = f'{10 ** 20 - 1}-55555555-5555-4555-8555-555555555555.json'
+        self.adopt_supervisors()
+        for agent in self.AGENTS:
+            for case in ('a file for the inbox', 'no number left'):
+                with self.subTest(agent=agent, case=case):
+                    self.reset()
+                    script = self.install(agent)
+                    inbox = self.inbox(agent)
+                    if case == 'a file for the inbox':
+                        inbox.parent.mkdir(parents=True)
+                        inbox.write_text('not an inbox\n')
+                        error = f'[Errno 17] File exists: {str(inbox)!r}'
+                    else:
+                        inbox.mkdir(parents=True)
+                        (inbox / last).write_text('{}')
+                        error = f'the results in {inbox} leave no 20-digit number for this one'
+                    before = sorted(path.relative_to(self.home) for path in self.home.rglob('*'))
+                    run = json.loads(self.launch(script).stdout)
+                    self.assertEqual(self.exit_status(run), 1)
+                    state = self.wait(run)
+                    self.assertEqual((state['status'], state['notification'], state['notification_error']),
+                                     ('completed', 'failed', error))
+                    self.assertEqual(sorted(path.relative_to(self.home) for path in self.home.rglob('*')),
+                                     before)
+                    self.assertEqual(self.calls(), [])
+                    reported = self.report(script, run)
+                    self.assertEqual((reported['notification'], reported['notification_error']),
+                                     ('failed', error))
+                    self.wait_until_released(time.monotonic())
+
+    def test_a_supervisor_stopped_before_the_inbox_leaves_its_result_lost(self):
+        """Stopped between recording queued and leaving the entry, the supervisor leaves nothing for the
+        result hook, and --status reports the result lost."""
+        for agent in self.AGENTS:
+            with self.subTest(agent=agent):
+                self.reset()
+                script = self.install(agent)
+                stopped_at(script, QUEUE_CALL)
+                run = json.loads(self.launch(script).stdout)
+                state = self.wait(run)
+                self.assertEqual((state['status'], state['notification']), ('completed', 'queued'))
+                self.assertFalse(self.inbox(agent).exists())
+                reported = self.report(script, run)
+                self.assertEqual((reported['notification'], reported['notification_error']),
+                                 ('lost', LOST_BEFORE_THE_INBOX))
+                self.assertEqual(self.hook(agent), {})
+
+    def test_a_result_in_the_inbox_arrives_though_the_supervisor_stops_right_after(self):
+        """The supervisor records queued before it publishes the entry, so a supervisor stopped right
+        after leaves a result that --status reports queued and the result hook delivers."""
+        for agent in self.AGENTS:
+            with self.subTest(agent=agent):
+                self.reset()
+                script = self.install(agent)
+                stopped_at(script, ENTRY_PUBLISHED, after=True)
+                run = json.loads(self.launch(script).stdout)
+                state = self.wait(run)
+                self.assertEqual((state['status'], state['notification']), ('completed', 'queued'))
+                message = json.loads(self.entry(agent, run).read_text())['message']
+                self.assertEqual(message, agent_message(state, run['result_file']))
+                self.assertEqual(self.report(script, run)['notification'], 'queued')
+                self.assertEqual(self.hook(agent), added(agent, [message]))
+                self.assertEqual(self.report(script, run)['notification'], 'delivered')
+
+    def test_status_reports_a_queued_result_the_inbox_never_got_as_lost(self):
+        """Once the supervisor has gone, --status reports a queued result lost unless the inbox still
+        holds it: waiting, being taken by the result hook, or kept as unreadable. A live supervisor may
+        still be leaving it, and a Codex run's queued means that codex queue took it. The result hook's
+        <entry>.delivered marker means it delivered the result without recording it in the file."""
+        script = self.install('cursor')
+        run_id = '44444444-4444-4444-8444-444444444444'
+        other_run = '55555555-5555-4555-8555-555555555555'
+        me = Path(f'/proc/{os.getpid()}/stat').read_text().rsplit(')', 1)[1].split()[19]
+        gone = {'supervisor_pid': os.getpid(), 'supervisor_identity': 'not-the-current-process'}
+        live = {'supervisor_pid': os.getpid(), 'supervisor_identity': me}
+        entry = f'{time.time_ns():020d}-{run_id}.json'
+        cases = {
+            'nothing in the inbox': (gone, CONVERSATION, [], 'lost'),
+            'waiting': (gone, CONVERSATION, [entry], 'queued'),
+            'being taken': (gone, CONVERSATION, [f'{entry}.4242.claimed'], 'queued'),
+            'kept as unreadable': (gone, CONVERSATION, [f'{entry}.invalid'], 'queued'),
+            # The result hook never takes the supervisor's unpublished temporary file.
+            'only its unpublished temporary file': (gone, CONVERSATION, [f'.{entry}.tmp'], 'lost'),
+            'only names that are not results': (gone, CONVERSATION, [
+                entry[1:], f'{entry}.backup', f'{entry}.x.claimed'], 'lost'),
+            'only another run waiting': (gone, CONVERSATION, [entry.replace(run_id, other_run)], 'lost'),
+            'waiting for another conversation': (gone, OTHER_CONVERSATION, [entry], 'lost'),
+            'the supervisor still running': (live, CONVERSATION, [], 'queued'),
+            'delivered, not recorded': (gone, CONVERSATION, [f'{entry}.delivered'], 'delivered'),
+            'delivered, not recorded, before the supervisor ended': (
+                live, CONVERSATION, [f'{entry}.delivered'], 'delivered'),
+            'another run delivered, not recorded': (
+                gone, CONVERSATION, [f'{entry.replace(run_id, other_run)}.delivered'], 'lost'),
+        }
+        path = self.root / 'result.json'
+        for agent in self.AGENTS:
+            for case, (supervisor, conversation, files, expected) in cases.items():
+                with self.subTest(agent=agent, case=case):
+                    shutil.rmtree(self.home, ignore_errors=True)
+                    inbox = self.inbox(agent, conversation)
+                    inbox.mkdir(parents=True)
+                    for name in files:
+                        (inbox / name).write_text('{}')
+                    state = dict(run_id=run_id, agent=agent, conversation=CONVERSATION, status='completed',
+                                 notification='queued', **supervisor)
+                    path.write_text(json.dumps(state))
+                    if expected == 'lost':
+                        state.update(notification='lost', notification_error=LOST_BEFORE_THE_INBOX)
+                    elif expected == 'delivered':
+                        state.update(notification='delivered', notification_error=NOT_RECORDED)
+                    self.assertEqual(self.report(script, {'result_file': str(path)}), state)
+        with self.subTest(agent='codex'):
+            shutil.rmtree(self.home, ignore_errors=True)
+            state = dict(run_id=run_id, thread=THREAD, status='completed', notification='queued', **gone)
+            path.write_text(json.dumps(state))
+            self.assertEqual(self.report(script, {'result_file': str(path)}), state)
+
+    def test_status_counts_a_supervisor_reaped_while_it_is_read_as_gone(self):
+        """Reading /proc of a process that is being reaped fails with ESRCH, not ENOENT; --status then
+        counts the supervisor as gone instead of failing."""
+        script = self.install('cursor')
+        me = Path(f'/proc/{os.getpid()}/stat').read_text().rsplit(')', 1)[1].split()[19]
+        path = self.root / 'result.json'
+        cases = {
+            'a running run': ({'status': 'running'}, {
+                'status': 'monitoring_lost', 'error': 'supervisor is not alive; completion is unknown'}),
+            'a pending Codex result': ({'status': 'completed', 'notification': 'pending', 'thread': THREAD}, {
+                'notification': 'lost',
+                'notification_error': 'the supervisor stopped before it delivered the result'}),
+        }
+        for case, (state, change) in cases.items():
+            with self.subTest(case=case):
+                state.update(supervisor_pid=os.getpid(), supervisor_identity=me)
+                path.write_text(json.dumps(state))
+                self.assertEqual(self.report(script, {'result_file': str(path)}), state)
+                result = subprocess.run(
+                    [sys.executable, '-B', '-c', REAPED_WHILE_READ, str(script), str(path)],
+                    env=self.env, capture_output=True, text=True, timeout=15)
+                self.assertEqual((result.returncode, result.stderr), (0, ''))
+                self.assertEqual(json.loads(result.stdout), {**state, **change})
+
+    def test_status_reads_the_result_file_again_before_it_reports_a_loss(self):
+        """The result hook records delivered before it removes the entry, so an empty inbox after a
+        queued result file may mean the hook finished in between: --status reads the file again."""
+        script = self.install('cursor')
+        path = self.root / 'result.json'
+        state = dict(run_id='44444444-4444-4444-8444-444444444444', agent='cursor',
+                     conversation=CONVERSATION, status='completed', notification='queued',
+                     supervisor_pid=os.getpid(), supervisor_identity='not-the-current-process')
+        path.write_text(json.dumps(state))
+        self.inbox('cursor').mkdir(parents=True)
+        result = subprocess.run([sys.executable, '-B', '-c', DELIVERED_MEANWHILE, str(script), str(path)],
+                                env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        self.assertEqual(json.loads(result.stdout), {**state, 'notification': 'delivered'})
+
+    def test_status_fails_when_it_cannot_read_the_inbox(self):
+        """Only a missing inbox means that nothing is there; an inbox that cannot be read makes --status
+        fail instead of reporting the result lost."""
+        script = self.install('cursor')
+        path = self.root / 'result.json'
+        path.write_text(json.dumps(dict(
+            run_id='44444444-4444-4444-8444-444444444444', agent='cursor', conversation=CONVERSATION,
+            status='completed', notification='queued', supervisor_pid=os.getpid(),
+            supervisor_identity='not-the-current-process')))
+        inbox = self.inbox('cursor')
+        inbox.parent.mkdir(parents=True)
+        cases = {'a file in its place': 'NotADirectoryError'}
+        if os.geteuid() != 0:  # root reads a directory without read permission
+            cases['no permission to read it'] = 'PermissionError'
+        for case, error in cases.items():
+            with self.subTest(case=case):
+                if case == 'a file in its place':
+                    inbox.write_text('not an inbox\n')
+                else:
+                    inbox.unlink()
+                    inbox.mkdir(mode=0o000)
+                try:
+                    result = subprocess.run([sys.executable, str(script), '--status', str(path)],
+                                            env=self.env, capture_output=True, text=True, timeout=15)
+                finally:
+                    if inbox.is_dir():
+                        inbox.chmod(0o755)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, '')
+                self.assertIn(error, result.stderr)
+
+    def test_status_reports_a_delivery_the_hook_could_not_record(self):
+        """When the result hook delivers a result but cannot record it in the result file, it keeps the
+        entry as <entry>.delivered and --status reports the result delivered, with why the file does not
+        say so."""
+        if os.geteuid() == 0:
+            self.skipTest('root writes into a read-only directory')
+        for agent in self.AGENTS:
+            with self.subTest(agent=agent):
+                self.reset()
+                script = self.install(agent)
+                run = json.loads(self.launch(script).stdout)
+                queued = self.wait(run)
+                entry = self.entry(agent, run)
+                message = json.loads(entry.read_text())['message']
+                run_dir = Path(run['result_file']).parent
+                run_dir.chmod(0o555)
+                try:
+                    result = self.run_hook(agent)
+                finally:
+                    run_dir.chmod(0o755)
+                self.assertEqual((result.returncode, json.loads(result.stdout)),
+                                 (0, added(agent, [message])))
+                self.assertTrue(result.stderr.startswith(
+                    f'Ralph result hook delivered {entry.name} but could not record it in '
+                    f"{run['result_file']}: PermissionError: "), result.stderr)
+                self.assertEqual(list(self.inbox(agent).iterdir()),
+                                 [entry.with_name(entry.name + '.delivered')])
+                self.assertEqual(json.loads(Path(run['result_file']).read_text()), queued)
+                self.assertEqual(self.report(script, run),
+                                 {**queued, 'notification': 'delivered', 'notification_error': NOT_RECORDED})
+                self.assertEqual(self.hook(agent), {})
+
+    def test_a_run_without_the_result_hook_is_refused(self):
+        """Without the result hook a queued result would never leave the inbox, so a Cursor or
+        Antigravity run starts only once setup has installed it."""
+        names = {'cursor': 'Cursor', 'antigravity': 'Antigravity'}
+        for agent in self.AGENTS:
+            for case in ('missing', 'a directory in its place'):
+                with self.subTest(agent=agent, case=case):
+                    self.reset()
+                    script = self.install(agent)
+                    installed = self.home / RESULT_HOOK[agent]
+                    installed.unlink()
+                    if case == 'a directory in its place':
+                        installed.mkdir()
+                    result = self.launch(script)
+                    self.assertEqual((result.returncode, result.stdout), (1, ''))
+                    self.assertEqual(result.stderr,
+                                     f'error: the {names[agent]} Ralph result hook is not installed: '
+                                     f'{installed}; rerun Downloads/setup-wsl.cmd\n')
+                    self.assertFalse((self.ralph / 'logs').exists())
+                    self.assertFalse((self.home / INBOX[agent]).exists())
+                    self.assertEqual(self.calls(), [])
+
+    def test_a_result_that_cannot_be_published_leaves_no_temporary_file(self):
+        """When the entry cannot be published in the inbox, the supervisor removes its temporary file,
+        records notification=failed with the error and exits 1."""
+        self.adopt_supervisors()
+        for agent in self.AGENTS:
+            with self.subTest(agent=agent):
+                self.reset()
+                script = self.install(agent)
+                failing_at(script, ENTRY_PUBLISHED)
+                run = json.loads(self.launch(script).stdout)
+                self.assertEqual(self.exit_status(run), 1)
+                state = self.wait(run)
+                self.assertEqual((state['status'], state['notification'], state['notification_error']),
+                                 ('completed', 'failed', '[Errno 5] injected failure'))
+                self.assertEqual(list(self.inbox(agent).iterdir()), [])
+                self.assertEqual(self.report(script, run)['notification'], 'failed')
+
+    def test_the_initiating_session_does_not_reach_the_runner(self):
+        """Cursor and Antigravity export the initiating session's identity and credentials to the shell
+        that starts Ralph; the runner gets the rest of the environment without any CURSOR_* or
+        ANTIGRAVITY_* variable or SUDO_ASKPASS, but with CURSOR_API_KEY."""
         session = {name: 'initiating-' + name.lower() for name in SESSION_VARIABLES}
         for agent in self.AGENTS:
             with self.subTest(agent=agent):
@@ -765,38 +1142,15 @@ class AgentNotifyTests(SupervisorTestCase):
                 self.env.update(session, **CURSOR_SIGN_IN, RALPH_TEST_MARKER='kept',
                                 RUNNER_ENVIRON=str(self.root / 'runner-environ'))
                 state = self.wait(json.loads(self.launch(script).stdout))
-                self.assertEqual(state['status'], 'completed')
-                self.assertEqual(state['notification'], 'delivered', state)
-                calls = self.calls()
-                self.assertEqual(len(calls), 1)
-                for where, seen in (('runner', recorded_environ(self.root / 'runner-environ')),
-                                    ('delivery', calls[0]['env'])):
-                    self.assertEqual([name for name in SESSION_VARIABLES if name in seen], [], where)
-                    self.assertEqual([name for name in seen if name == 'SUDO_ASKPASS' or (
-                        name.startswith(('CURSOR_', 'ANTIGRAVITY_')) and name not in CURSOR_SIGN_IN)],
-                        [], where)
-                    self.assertEqual({name: seen.get(name) for name in CURSOR_SIGN_IN},
-                                     CURSOR_SIGN_IN, where)
-                    self.assertEqual(seen.get('RALPH_TEST_MARKER'), 'kept', where)
-                    self.assertEqual(seen.get('PATH'), self.env['PATH'], where)
-
-    def test_delivery_timeout_is_recorded(self):
-        """When DELIVERY_TIMEOUT expires, the CLI and every process it started are stopped and reaped
-        before the failure is recorded."""
-        for agent in self.AGENTS:
-            with self.subTest(agent=agent):
-                self.reset()
-                script = self.install(agent)
-                script.write_text(script.read_text().replace('DELIVERY_TIMEOUT = 600',
-                                                             'DELIVERY_TIMEOUT = 1'))
-                group = self.root / 'delivery-group.json'
-                self.env.update(FAKE_DELAY='5', FAKE_GROUP=str(group))
-                run = json.loads(self.launch(script).stdout)
-                started = self.delivery_group(group)
-                state = self.wait(run)
-                self.assertEqual(state['notification'], 'failed')
-                self.assertIn('timed out', state['notification_error'])
-                self.assert_stopped(started)
+                self.assertEqual((state['status'], state['notification']), ('completed', 'queued'))
+                seen = recorded_environ(self.root / 'runner-environ')
+                self.assertEqual([name for name in SESSION_VARIABLES if name in seen], [])
+                self.assertEqual([name for name in seen if name == 'SUDO_ASKPASS' or (
+                    name.startswith(('CURSOR_', 'ANTIGRAVITY_')) and name not in CURSOR_SIGN_IN)], [])
+                self.assertEqual({name: seen.get(name) for name in CURSOR_SIGN_IN}, CURSOR_SIGN_IN)
+                self.assertEqual(seen.get('RALPH_TEST_MARKER'), 'kept')
+                self.assertEqual(seen.get('PATH'), self.env['PATH'])
+                self.assertEqual(self.calls(), [])
 
     def test_invalid_start_never_runs(self):
         for agent in self.AGENTS:
@@ -806,11 +1160,22 @@ class AgentNotifyTests(SupervisorTestCase):
                 self.assertNotEqual(self.launch(script, conversation=None).returncode, 0)
                 self.assertNotEqual(self.launch(script, conversation='invalid').returncode, 0)
                 self.assertNotEqual(self.launch(script, '--thread', CONVERSATION).returncode, 0)
-                self.env['FAKE_HELP'] = 'no such option'
-                refused = self.launch(script)
-                self.assertNotEqual(refused.returncode, 0)
-                self.assertIn('refusing to start', refused.stderr)
+                self.assertNotEqual(self.launch(script, '--max-iterations', '-1').returncode, 0)
                 self.assertFalse((self.ralph / 'logs/runs').exists())
+                self.assertFalse((self.home / INBOX[agent]).exists())
+                self.assertEqual(self.calls(), [])
+
+    def test_nested_start_rejected(self):
+        for agent in self.AGENTS:
+            with self.subTest(agent=agent):
+                self.reset()
+                script = self.install(agent)
+                self.env['RALPH_RUN_ACTIVE'] = '1'
+                result = self.launch(script)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('refusing to start a nested Ralph runner', result.stderr)
+                self.assertFalse((self.ralph / 'logs').exists())
+                self.assertFalse((self.home / INBOX[agent]).exists())
                 self.assertEqual(self.calls(), [])
 
     def test_models_are_checked_recorded_and_passed_to_the_runner(self):
@@ -821,7 +1186,7 @@ class AgentNotifyTests(SupervisorTestCase):
                 self.reset()
                 script = self.install(agent)
                 path = self.root / settings[agent]
-                path.parent.mkdir(parents=True)
+                path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(json.dumps({'model': 'model-a'}))
                 state = self.wait(json.loads(self.launch(script, '--review-model', 'model-b').stdout))
                 self.assertEqual((state['worker_model'], state['review_model']), ('model-a', 'model-b'))
@@ -836,6 +1201,8 @@ class AgentNotifyTests(SupervisorTestCase):
                 path.write_text('{"model": "has space"}')
                 self.assertIn('not a valid model name', self.launch(script).stderr)
                 self.assertEqual(len(list((self.ralph / 'logs/runs').iterdir())), 1)
+                # Listing the models is the CLI's only use outside the runs.
+                self.assertEqual({tuple(call) for call in self.calls()}, {('models',)})
 
     def test_cursor_parameterized_models_are_left_to_cursor(self):
         # `agent models` lists no parameterized names; Cursor checks them in the first iteration.
@@ -901,7 +1268,7 @@ class AgentNotifyTests(SupervisorTestCase):
                     self.assertFalse((self.ralph / 'logs/runs').exists())
                     self.assertEqual(self.calls(), [])
 
-    def test_real_runner_and_delivery_for_each_agent(self):
+    def test_real_runner_for_each_agent_leaves_its_result_for_the_hook(self):
         root = Path(__file__).resolve().parents[1]
         for agent in self.AGENTS:
             with self.subTest(agent=agent):
@@ -911,12 +1278,12 @@ class AgentNotifyTests(SupervisorTestCase):
                 subprocess.run(['bash', '-c', 'source "$INSTALL_SH" && stage_agent_ralph_skill "$AGENT" "$DEST"'],
                                env=isolated_env(self.root, INSTALL_SH=str(root / 'install.sh'),
                                                 AGENT=agent, DEST=str(skill)), check=True)
+                self.install_result_hook(agent)
                 cli = self.root / f'fake-{agent}'
                 cli.write_text(REAL_RUN_AGENT)
                 cli.chmod(0o755)
                 (skill / f'scripts/{agent}-runtime.json').write_text(json.dumps(
                     {'schema': 1, agent: str(cli), 'setup_version': 'fixture'}))
-                without_delivery_delay(skill / 'scripts' / SOURCE.name)
                 (self.ralph / 'prd.json').write_text(json.dumps({
                     'project': 'fixture', 'branchName': 'test/notify', 'description': 'fixture',
                     'userStories': [{'id': 'US-001', 'title': 'Write fixture',
@@ -930,41 +1297,39 @@ class AgentNotifyTests(SupervisorTestCase):
                 self.env = self.agent_env(agent)
                 result = self.launch(skill / 'scripts' / SOURCE.name)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                state = self.wait(json.loads(result.stdout))
+                run = json.loads(result.stdout)
+                state = self.wait(run, timeout=120)
                 self.assertEqual(state['status'], 'completed', Path(state['log']).read_text())
-                self.assertEqual(state['notification'], 'delivered', state)
+                self.assertEqual(state['notification'], 'queued', state)
                 self.assertEqual(state['iterations_run'], 1)
                 log = subprocess.check_output(['git', '-C', str(self.project), 'log', '-1', '--format=%s'],
                                               text=True)
                 self.assertIn('feat: US-001 - Write fixture', log)
                 self.assertTrue((self.ralph / f'logs/{agent}-iteration-1.log').exists())
+                # The CLI ran for the worker and the reviewer only; nothing resumed the conversation.
+                calls = self.calls()
+                self.assertEqual(len(calls), 2, calls)
+                self.assertEqual([call for call in calls if CONVERSATION in json.dumps(call)], [])
+                message = agent_message(state, run['result_file'])
+                self.assertEqual(json.loads(self.entry(agent, run).read_text())['message'], message)
+                self.assertEqual(self.hook(agent), added(agent, [message]))
+                self.assertEqual(self.report(skill / 'scripts' / SOURCE.name, run)['notification'],
+                                 'delivered')
 
 
-# A fake CLI that plays worker, reviewer and result delivery for the real runner.
+# A fake CLI that plays worker and reviewer for the real runner, recording the arguments of every call.
 REAL_RUN_AGENT = r"""#!/usr/bin/env python3
 import json, os, pathlib, subprocess, sys
 args = sys.argv[1:]
 agent = os.environ['FAKE_AGENT_KIND']
-if args == ['--help']:
-    print('--resume --conversation', file=sys.stderr if agent == 'antigravity' else sys.stdout)
-    sys.exit(0)
+with open(os.environ['AGENT_CALLS'], 'a') as stream:
+    stream.write(json.dumps(args) + '\n')
 if agent == 'cursor':
     prompt = args[-1]
     cwd = pathlib.Path(args[args.index('--workspace') + 1])
-    resumed = next((a.split('=', 1)[1] for a in args if a.startswith('--resume=')), None)
 else:
     prompt = args[args.index('-p') + 1]
     cwd = pathlib.Path.cwd()
-    resumed = args[args.index('--conversation') + 1] if '--conversation' in args else None
-if resumed:
-    with open(os.environ['DELIVERY_CALLS'], 'a') as stream:
-        stream.write(json.dumps({'args': args}) + '\n')
-    if agent == 'cursor':
-        print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,
-                          'session_id': resumed}))
-    else:
-        print(json.dumps({'conversation_id': resumed, 'status': 'SUCCESS', 'response': 'ok'}))
-    sys.exit(0)
 if 'independent fail-close and clean-break policy reviewer' in prompt:
     tree = subprocess.check_output(['git', '-C', str(cwd), 'write-tree'], text=True).strip()
     review = {'approved': True, 'findings': [], 'reviewed_tree': tree}
