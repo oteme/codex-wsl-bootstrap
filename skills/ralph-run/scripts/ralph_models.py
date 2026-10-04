@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Resolve the models a Ralph run uses, without touching the agent's own default model.
+"""Resolve the models and the Codex reasoning effort a Ralph run uses, without touching the agent's
+own defaults.
 
 Saved Ralph defaults live in a per-agent settings file that setup never rewrites:
   codex        $CODEX_HOME/ralph.json (default ~/.codex/ralph.json)
@@ -10,8 +11,14 @@ A run may override them with RALPH_MODEL and RALPH_REVIEW_MODEL. The worker uses
 "model"; the reviewer uses RALPH_REVIEW_MODEL, then "review_model", then the worker's model. With
 none of these the agent CLI runs with its own default model, exactly as without this file.
 
-`resolve --agent AGENT` prints two lines, the worker and reviewer model, each empty for the CLI
-default. `check --agent AGENT` only validates the settings file. Invalid input is an error.
+The Codex file may also hold "effort" and "review_effort", the reasoning effort Codex runs with (its
+model_reasoning_effort), resolved the same way with RALPH_EFFORT and RALPH_REVIEW_EFFORT; without
+any, Codex keeps its configured effort. Cursor and Antigravity take the effort in the model name, so
+an effort for them is an error.
+
+`resolve --agent AGENT` prints four lines: the worker and reviewer model, then the worker and
+reviewer effort, each empty for the CLI default. `check --agent AGENT` only validates the settings
+file. Invalid input is an error.
 """
 import argparse
 import json
@@ -20,9 +27,13 @@ from pathlib import Path
 import re
 import sys
 
-KEYS = ('model', 'review_model')
+MODEL_KEYS = ('model', 'review_model')
+EFFORT_KEYS = ('effort', 'review_effort')
 # Model slugs as the CLIs print them: letters, digits and . _ - : / [ ] = , only.
 MODEL = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]=,-]*')
+# Reasoning efforts as Codex sends them to the model: lowercase letters only. Which ones a model
+# accepts is up to the model; the first codex exec fails on any other.
+EFFORT = re.compile(r'[a-z]+')
 
 
 def settings_path(agent):
@@ -42,6 +53,18 @@ def valid_model(value, origin):
     return value
 
 
+def valid_effort(value, origin):
+    if not isinstance(value, str) or not EFFORT.fullmatch(value):
+        raise ValueError(f'{origin} is not a valid reasoning effort: {value!r}')
+    return value
+
+
+def codex_only(agent, origin):
+    if agent != 'codex':
+        raise ValueError(f'{origin}: only Codex takes a Ralph reasoning effort; '
+                         f'{agent} takes it in the model name')
+
+
 def saved(agent):
     path = settings_path(agent)
     if not path.exists() and not path.is_symlink():
@@ -52,10 +75,15 @@ def saved(agent):
         raise ValueError(f'invalid Ralph model settings {path}: {exc}') from exc
     if not isinstance(data, dict):
         raise ValueError(f'Ralph model settings must be a JSON object: {path}')
-    unknown = sorted(set(data) - set(KEYS))
+    unknown = sorted(set(data) - set(MODEL_KEYS + EFFORT_KEYS))
     if unknown:
         raise ValueError(f'unknown keys in Ralph model settings {path}: {", ".join(unknown)}')
-    return {key: valid_model(data[key], f'{key} in {path}') for key in KEYS if key in data}
+    efforts = [key for key in EFFORT_KEYS if key in data]
+    if efforts:
+        codex_only(agent, f'{", ".join(efforts)} in {path}')
+    values = {key: valid_model(data[key], f'{key} in {path}') for key in MODEL_KEYS if key in data}
+    values.update((key, valid_effort(data[key], f'{key} in {path}')) for key in efforts)
+    return values
 
 
 def resolve(agent, model=None, review_model=None):
@@ -71,6 +99,24 @@ def resolve(agent, model=None, review_model=None):
     return worker, reviewer
 
 
+def resolve_efforts(agent, effort=None, review_effort=None):
+    """Return (worker effort, reviewer effort); None means the CLI's own effort."""
+    defaults = saved(agent)
+    if effort is None:
+        effort = os.environ.get('RALPH_EFFORT') or None
+    if review_effort is None:
+        review_effort = os.environ.get('RALPH_REVIEW_EFFORT') or None
+    if effort is not None:
+        codex_only(agent, 'the run effort')
+    if review_effort is not None:
+        codex_only(agent, 'the run review effort')
+    worker = (valid_effort(effort, 'the run effort') if effort is not None
+              else defaults.get('effort'))
+    reviewer = (valid_effort(review_effort, 'the run review effort') if review_effort is not None
+                else defaults.get('review_effort', worker))
+    return worker, reviewer
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -82,8 +128,9 @@ def main():
             saved(args.agent)
         else:
             worker, reviewer = resolve(args.agent)
-            print(worker or '')
-            print(reviewer or '')
+            worker_effort, review_effort = resolve_efforts(args.agent)
+            for value in (worker, reviewer, worker_effort, review_effort):
+                print(value or '')
     except ValueError as exc:
         print(f'error: {exc}', file=sys.stderr)
         return 1

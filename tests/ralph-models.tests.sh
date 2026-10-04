@@ -7,14 +7,21 @@ trap 'rm -rf "$TEST_ROOT"' EXIT
 
 MODELS="$ROOT/skills/ralph-run/scripts/ralph_models.py"
 export HOME="$TEST_ROOT/home"
-unset CODEX_HOME RALPH_MODEL RALPH_REVIEW_MODEL
+unset CODEX_HOME RALPH_MODEL RALPH_REVIEW_MODEL RALPH_EFFORT RALPH_REVIEW_EFFORT
 mkdir -p "$HOME/.codex" "$HOME/.cursor" "$HOME/.gemini/antigravity-cli"
 
-# resolved AGENT [ENV...]: prints "worker|reviewer" as the runner would use them.
+# resolved AGENT [ENV...]: prints "worker|reviewer" models as the runner would use them.
 resolved() {
   local agent="$1"
   shift
-  env "$@" python3 "$MODELS" resolve --agent "$agent" | paste -sd '|'
+  env "$@" python3 "$MODELS" resolve --agent "$agent" | sed -n 1,2p | paste -sd '|'
+}
+
+# efforts AGENT [ENV...]: prints "worker|reviewer" reasoning efforts as the runner would use them.
+efforts() {
+  local agent="$1"
+  shift
+  env "$@" python3 "$MODELS" resolve --agent "$agent" | sed -n 3,4p | paste -sd '|'
 }
 
 expect_error() {
@@ -31,6 +38,9 @@ expect_error() {
 # Without any setting every agent keeps its CLI's default model.
 for agent in codex cursor antigravity; do
   [[ "$(resolved "$agent")" == "|" ]]
+  # resolve always prints the two models and then the two efforts.
+  [[ "$(python3 "$MODELS" resolve --agent "$agent" | wc -l)" -eq 4 ]]
+  [[ "$(efforts "$agent")" == "|" ]]
   # An empty override in the environment means "not set".
   [[ "$(resolved "$agent" RALPH_MODEL= RALPH_REVIEW_MODEL=)" == "|" ]]
   python3 "$MODELS" check --agent "$agent"
@@ -55,7 +65,8 @@ import sys
 sys.path.insert(0, sys.argv[1])
 import ralph_models
 for agent in ('gemini', 'Cursor', '', None):
-    for function in (ralph_models.settings_path, ralph_models.saved, ralph_models.resolve):
+    for function in (ralph_models.settings_path, ralph_models.saved, ralph_models.resolve,
+                     ralph_models.resolve_efforts):
         try:
             function(agent)
         except ValueError as exc:
@@ -102,4 +113,55 @@ mkdir "$cursor_settings"
 expect_error 'invalid Ralph model settings' python3 "$MODELS" check --agent cursor
 rmdir "$cursor_settings"
 
-printf '%s\n' 'PASS: Ralph model defaults, run overrides, empty overrides, reviewer fallback, unknown agents, and invalid settings.'
+# Codex reasoning effort: saved defaults, the reviewer falling back to the worker's, run
+# overrides per role, and empty overrides meaning "not set". Efforts leave the models alone.
+codex_settings="$HOME/.codex/ralph.json"
+printf '{"effort": "high", "review_effort": "xhigh"}\n' > "$codex_settings"
+python3 "$MODELS" check --agent codex
+[[ "$(efforts codex)" == "high|xhigh" ]]
+[[ "$(resolved codex)" == "|" ]]
+[[ "$(efforts codex RALPH_EFFORT=low)" == "low|xhigh" ]]
+[[ "$(efforts codex RALPH_REVIEW_EFFORT=max)" == "high|max" ]]
+[[ "$(efforts codex RALPH_EFFORT= RALPH_REVIEW_EFFORT=)" == "high|xhigh" ]]
+printf '{"model": "gpt-6-sol", "effort": "high"}\n' > "$codex_settings"
+[[ "$(efforts codex)" == "high|high" ]]
+[[ "$(resolved codex)" == "gpt-6-sol|gpt-6-sol" ]]
+[[ "$(efforts codex RALPH_EFFORT=medium)" == "medium|medium" ]]
+printf '{"review_effort": "medium"}\n' > "$codex_settings"
+[[ "$(efforts codex)" == "|medium" ]]
+rm "$codex_settings"
+[[ "$(efforts codex RALPH_EFFORT=xhigh)" == "xhigh|xhigh" ]]
+[[ "$(efforts codex RALPH_REVIEW_EFFORT=low)" == "|low" ]]
+
+# Cursor and agy take the effort in the model name: an effort for them is an error, saved or run.
+for agent in cursor antigravity; do
+  for variable in RALPH_EFFORT RALPH_REVIEW_EFFORT; do
+    expect_error 'only Codex takes a Ralph reasoning effort' \
+      env "$variable=high" python3 "$MODELS" resolve --agent "$agent"
+  done
+done
+printf '{"model": "claude-opus-5-5-high", "effort": "high"}\n' > "$cursor_settings"
+expect_error 'only Codex takes a Ralph reasoning effort' python3 "$MODELS" check --agent cursor
+expect_error 'only Codex takes a Ralph reasoning effort' python3 "$MODELS" resolve --agent cursor
+rm "$cursor_settings"
+
+# Invalid efforts are errors, never passed to Codex or ignored.
+while IFS='|' read -r content expected; do
+  printf '%s\n' "$content" > "$codex_settings"
+  expect_error "$expected" python3 "$MODELS" check --agent codex
+  expect_error "$expected" python3 "$MODELS" resolve --agent codex
+done <<'CASES'
+{"effort": ""}|is not a valid reasoning effort
+{"effort": 5}|is not a valid reasoning effort
+{"effort": "High"}|is not a valid reasoning effort
+{"review_effort": "x high"}|is not a valid reasoning effort
+{"effort": "high\""}|is not a valid reasoning effort
+{"reasoning_effort": "high"}|unknown keys in Ralph model settings
+CASES
+rm "$codex_settings"
+expect_error 'the run effort is not a valid reasoning effort' \
+  env RALPH_EFFORT='high"' python3 "$MODELS" resolve --agent codex
+expect_error 'the run review effort is not a valid reasoning effort' \
+  env RALPH_REVIEW_EFFORT='-c' python3 "$MODELS" resolve --agent codex
+
+printf '%s\n' 'PASS: Ralph model and Codex effort defaults, run overrides, empty overrides, reviewer fallback, unknown agents, and invalid settings.'

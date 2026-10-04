@@ -300,6 +300,22 @@ rejects an invalid one in the first iteration. An empty run model is refused. Co
 list, so an unknown name fails the first `codex exec`. An invalid settings file stops every run of
 that agent, and Doctor reports it.
 
+Codex Ralph can also set the reasoning effort (Codex's `model_reasoning_effort`), resolved like the
+models: `effort` (workers) and `review_effort` (policy reviewer) in `$CODEX_HOME/ralph.json`, or
+`--effort` and `--review-effort` for one run ("run ralph with effort high").
+
+```json
+{"model": "gpt-6-sol", "effort": "high", "review_effort": "xhigh"}
+```
+
+The runner passes it to `codex exec` as `-c model_reasoning_effort="<effort>"`; without any Ralph
+effort, Codex keeps the effort in its own `config.toml`, exactly as before. An effort is lowercase
+letters; one the model does not accept fails the first `codex exec`. A runner started without the
+skill's launcher, as Claude Code's `ralph-run` Codex mode starts it, takes the run values from
+`RALPH_MODEL`, `RALPH_REVIEW_MODEL`, `RALPH_EFFORT` and `RALPH_REVIEW_EFFORT`. Cursor and agy take
+the effort in the model name (`claude-opus-5-5-high`), so an effort in their settings file or run
+is refused before the run starts.
+
 ## Verify
 
 ```bash

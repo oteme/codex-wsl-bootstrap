@@ -421,7 +421,16 @@ check_doctor_failure 'Cursor Ralph model settings are invalid'
 rm "$HOME/.cursor/ralph.json"
 printf '{"review_model": 5}\n' > "$doctor_home/ralph.json"
 check_doctor_failure 'CLI Ralph model settings are invalid'
+printf '{"effort": "High"}\n' > "$doctor_home/ralph.json"
+check_doctor_failure 'CLI Ralph model settings are invalid'
 rm "$doctor_home/ralph.json"
+# Cursor and agy take the effort in the model name, so an effort in their settings fails Doctor.
+printf '{"effort": "high"}\n' > "$HOME/.cursor/ralph.json"
+check_doctor_failure 'Cursor Ralph model settings are invalid'
+rm "$HOME/.cursor/ralph.json"
+printf '{"review_effort": "high"}\n' > "$HOME/.gemini/antigravity-cli/ralph.json"
+check_doctor_failure 'Antigravity Ralph model settings are invalid'
+rm "$HOME/.gemini/antigravity-cli/ralph.json"
 # A regression script that cannot run fails Doctor instead of being skipped.
 chmod 0644 "$doctor_home/hooks/rtk-safe/test.sh"
 check_doctor_failure 'CLI Codex RTK Safe Hook regression not executable'

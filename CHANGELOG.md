@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.0.0] - 2026-10-04
+
+### Added
+
+- Ralph can set Codex's reasoning effort (`model_reasoning_effort`) for its workers and its policy reviewer, the same way it sets their models: `effort` and `review_effort` in `$CODEX_HOME/ralph.json`, `--effort` and `--review-effort` on the Codex skill's launcher for one run, and `RALPH_EFFORT` and `RALPH_REVIEW_EFFORT` for a runner started directly, as Claude Code's `ralph-run` Codex mode starts it. Each role uses the run value, then the saved one, and the reviewer then falls back to the worker's effort. The runner passes the effort to `codex exec` as `-c model_reasoning_effort="<effort>"` and prints `Ralph reasoning effort: worker=... reviewer=...`; the supervisor records it in `result.json` as `worker_effort` and `review_effort`. An effort must be lowercase letters, and one the model does not accept fails the first `codex exec` (the API rejects it), which stops the run.
+- Cursor and agy take the effort in the model name (`claude-opus-5-5-high`), so `effort` or `review_effort` in their `ralph.json` fails Doctor and stops their runs, and `RALPH_EFFORT` or `RALPH_REVIEW_EFFORT` in their environment is refused before a run starts. Their launchers have no `--effort` option.
+
+### Unchanged
+
+- Without a Ralph effort, every runner starts its CLI with the same arguments as before, and Codex keeps the effort in its own `config.toml`. `ralph_models.py resolve` prints four lines (the two models, then the two efforts) instead of two.
+
 ## [0.8.0.0] - 2026-09-30
 
 ### Changed

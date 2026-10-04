@@ -27,15 +27,18 @@ Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, o
   rejects, leaves its work in the working tree and the next iteration continues from it.
 - Ralph directory: `<project-root>/scripts/ralph` by default. Run from the project root,
   the same directory where `./scripts/ralph/ralph.sh` would be run.
-- Models: optional, separate from the model you use interactively. Saved Ralph defaults live in
-  `$CODEX_HOME/ralph.json` (normally `~/.codex/ralph.json`) as `{"model": "<worker model>",
-  "review_model": "<reviewer model>"}` (both keys optional; setup never rewrites this file). When
-  the user names a model for this run, pass `--model <name>` for the workers and `--review-model
-  <name>` for the policy reviewer to the launcher. Each role uses the run value, then the saved
-  value; the reviewer then falls back to the worker's model; with no model anywhere Codex uses its
-  configured model. Codex has no model list command, so an unknown name fails the first `codex exec`
-  and stops the run. When the user asks to change the saved Ralph model, edit the settings file with
-  the exact model names Codex accepts; an invalid file stops every run until fixed.
+- Models and reasoning effort: optional, separate from the model and effort you use interactively.
+  Saved Ralph defaults live in `$CODEX_HOME/ralph.json` (normally `~/.codex/ralph.json`) as
+  `{"model": "<worker model>", "review_model": "<reviewer model>", "effort": "<worker effort>",
+  "review_effort": "<reviewer effort>"}` (all keys optional; setup never rewrites this file). When
+  the user names a model or an effort for this run, pass `--model <name>` and `--effort <level>`
+  for the workers and `--review-model <name>` and `--review-effort <level>` for the policy reviewer
+  to the launcher. Each role uses the run value, then the saved value; the reviewer then falls back
+  to the worker's; with nothing anywhere Codex uses its configured model and
+  `model_reasoning_effort`. Codex has no model list command, so an unknown model name, or an effort
+  the model does not accept, fails the first `codex exec` and stops the run. When the user asks to
+  change the saved Ralph model or effort, edit the settings file with the exact names Codex
+  accepts; an invalid file stops every run until fixed.
 
 ## Workflow
 
@@ -62,9 +65,9 @@ Do not modify `scripts/ralph/prd.json`, `scripts/ralph/CLAUDE.md`, `ralph.sh`, o
      --max-iterations 0
    ```
 
-   Replace 0 only with the user's explicit iteration limit. Add `--model` and `--review-model`
-   only when the user named a model for this run. The launcher waits for a short startup
-   acknowledgement, returns a run ID and result file, then exits. It detaches the supervisor
+   Replace 0 only with the user's explicit iteration limit. Add `--model`, `--review-model`,
+   `--effort` and `--review-effort` only when the user named that value for this run. The
+   launcher waits for a short startup acknowledgement, returns a run ID and result file, then exits. It detaches the supervisor
    itself; do not add `&` or `nohup`. A repository lock prevents simultaneous runners.
 5. When `started=true` is returned, tell the user that Ralph started and provide the result file.
    **End the turn.** Do not keep the parent active using wait/stdin, sleeps, process checks,

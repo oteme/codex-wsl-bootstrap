@@ -11,7 +11,7 @@ trap 'rm -rf "$TEST_ROOT"' EXIT
 FAKE_BIN="$TEST_ROOT/bin"
 export HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT/tmp" PATH="$FAKE_BIN:/usr/bin:/bin"
 export FAKE_STATE="$TEST_ROOT/state" FAKE_CALLS="$TEST_ROOT/calls" FAKE_CLI="$TEST_ROOT/fake-cli"
-unset CODEX_HOME CODEX_APP_HOME RALPH_MODEL RALPH_REVIEW_MODEL
+unset CODEX_HOME CODEX_APP_HOME RALPH_MODEL RALPH_REVIEW_MODEL RALPH_EFFORT RALPH_REVIEW_EFFORT
 mkdir -p "$HOME" "$TMPDIR"
 
 # install.sh parses its positional arguments; sourcing it defines the functions without running main.
