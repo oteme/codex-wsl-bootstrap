@@ -30,4 +30,16 @@ if (-not $cmdContent.Contains("https://raw.githubusercontent.com/oteme/codex-wsl
     throw "setup-wsl.cmd does not download the latest PowerShell launcher."
 }
 
-Write-Output "PASS: Windows paths and the WSL Git update source are configured correctly."
+# Every WSL command starts in the Linux home directory, whatever folder the launcher runs from.
+$wslCalls = @([System.IO.File]::ReadAllLines($setupScript) |
+    Where-Object { $_ -match '\bwsl\.exe\s' -and $_.TrimStart() -notlike '#*' })
+if ($wslCalls.Count -lt 6) {
+    throw "Expected at least 6 wsl.exe calls in setup-wsl.ps1, found $($wslCalls.Count)."
+}
+foreach ($call in $wslCalls) {
+    if ($call -notmatch "\bwsl\.exe --cd '~' ") {
+        throw "A wsl.exe call does not start in the Linux home directory: $($call.Trim())"
+    }
+}
+
+Write-Output "PASS: Windows paths, the WSL Git update source and the WSL start directory are configured correctly."

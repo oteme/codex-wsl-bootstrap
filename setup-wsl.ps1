@@ -8,6 +8,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Every wsl.exe call starts in the Linux home directory (--cd '~'). Otherwise WSL starts in the
+# folder the launcher runs from, usually Downloads, and WSL cannot list a Windows folder that
+# holds a name longer than 255 bytes in UTF-8: Python then fails to import anything there.
+
 function ConvertTo-WslPath {
     param([Parameter(Mandatory = $true)][string]$WindowsPath)
 
@@ -15,7 +19,7 @@ function ConvertTo-WslPath {
     # native wsl.exe command line. Double them so wslpath receives the original
     # Windows path, including drive letters, spaces, and directory separators.
     $escapedPath = $WindowsPath.Replace("\", "\\")
-    $conversionOutput = @(wsl.exe wslpath -a $escapedPath 2>&1)
+    $conversionOutput = @(wsl.exe --cd '~' wslpath -a $escapedPath 2>&1)
     $conversionExitCode = $LASTEXITCODE
 
     if ($conversionExitCode -ne 0) {
@@ -81,15 +85,15 @@ if ($SourcePath) {
 
     Write-Host "Starting Codex workstation setup from local files..."
     $wslInstallScript = "$wslRoot/install.sh"
-    wsl.exe test -f $wslInstallScript
+    wsl.exe --cd '~' test -f $wslInstallScript
     if ($LASTEXITCODE -ne 0) {
         throw "install.sh was not found at '$wslInstallScript'."
     }
     if ($wslCodexAppHome) {
-        wsl.exe env "CODEX_APP_HOME=$wslCodexAppHome" bash $wslInstallScript
+        wsl.exe --cd '~' env "CODEX_APP_HOME=$wslCodexAppHome" bash $wslInstallScript
     } else {
         Write-Host "Codex App was not detected; skipping its local bootstrap environment."
-        wsl.exe bash $wslInstallScript
+        wsl.exe --cd '~' bash $wslInstallScript
     }
 } else {
     if ($DryRun) {
@@ -139,10 +143,10 @@ bash "$repo/install.sh"
         [System.IO.File]::WriteAllText($temporaryScript, $wslUpdater, $utf8WithoutBom)
         $wslUpdaterPath = ConvertTo-WslPath -WindowsPath $temporaryScript
         if ($wslCodexAppHome) {
-            wsl.exe env "BOOTSTRAP_REPOSITORY=$Repository" "BOOTSTRAP_REF=$Ref" "CODEX_APP_HOME=$wslCodexAppHome" bash $wslUpdaterPath
+            wsl.exe --cd '~' env "BOOTSTRAP_REPOSITORY=$Repository" "BOOTSTRAP_REF=$Ref" "CODEX_APP_HOME=$wslCodexAppHome" bash $wslUpdaterPath
         } else {
             Write-Host "Codex App was not detected; skipping its local bootstrap environment."
-            wsl.exe env "BOOTSTRAP_REPOSITORY=$Repository" "BOOTSTRAP_REF=$Ref" bash $wslUpdaterPath
+            wsl.exe --cd '~' env "BOOTSTRAP_REPOSITORY=$Repository" "BOOTSTRAP_REF=$Ref" bash $wslUpdaterPath
         }
     } finally {
         Remove-Item -Force -ErrorAction SilentlyContinue $temporaryScript
