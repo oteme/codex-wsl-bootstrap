@@ -38,7 +38,7 @@ TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 # Ralph model settings live in the agent homes; keep this machine's own settings out of the runs.
 export HOME="$TEST_ROOT/home"
-unset CODEX_HOME RALPH_MODEL RALPH_REVIEW_MODEL
+unset CODEX_HOME RALPH_MODEL RALPH_REVIEW_MODEL RALPH_EFFORT RALPH_REVIEW_EFFORT
 # Only the runner may set RALPH_RUN_ACTIVE: the fake agent requires it on every call.
 unset RALPH_RUN_ACTIVE
 mkdir -p "$HOME"
@@ -306,11 +306,12 @@ PY
 # Codex CLI: the exec subcommand first, the prompt last. Every call must carry --cd DIR,
 # --dangerously-bypass-approvals-and-sandbox and --output-last-message FILE, in any order, and the
 # reviewer call also --ephemeral and --output-schema FILE; nothing else is allowed but an optional
-# --model NAME.
+# --model NAME and an optional -c model_reasoning_effort="EFFORT".
 codex() {
   local last_message=""
   local codex_cwd=""
   local model=""
+  local effort=""
   local prompt="${*: -1}"
   local subcommand="${1-}"
   local bypass=0 ephemeral=0 schema_given=0 output_schema="" unexpected=""
@@ -338,6 +339,14 @@ codex() {
         model="${options[index + 1]-}"
         index=$((index + 1))
         ;;
+      -c)
+        if [[ "${options[index + 1]-}" =~ ^model_reasoning_effort=\"([a-z]+)\"$ ]]; then
+          effort="${BASH_REMATCH[1]}"
+        else
+          unexpected+=" -c ${options[index + 1]-}"
+        fi
+        index=$((index + 1))
+        ;;
       *) unexpected+=" ${options[index]}" ;;
     esac
     index=$((index + 1))
@@ -355,11 +364,12 @@ codex() {
     || -z "$last_message" || "$last_message" == -* || -z "$prompt" || "$prompt" == -* \
     || -n "$unexpected" ]]; then
     echo "fake codex: expected exec --cd DIR --dangerously-bypass-approvals-and-sandbox" \
-      "[--ephemeral --output-schema FILE] [--model NAME] --output-last-message FILE PROMPT;" \
-      "got: $subcommand ${options[*]} PROMPT" >&2
+      "[--ephemeral --output-schema FILE] [--model NAME] [-c model_reasoning_effort=\"EFFORT\"]" \
+      "--output-last-message FILE PROMPT; got: $subcommand ${options[*]} PROMPT" >&2
     return 12
   fi
   printf '%s %s\n' "$(agent_role "$prompt")" "${model:--}" >> "$MOCK_MODELS_FILE"
+  printf '%s %s\n' "$(agent_role "$prompt")" "${effort:--}" >> "$MOCK_EFFORTS_FILE"
   agent_behavior "$codex_cwd" "$prompt" "$last_message" "$PWD"
 }
 
@@ -556,6 +566,9 @@ export MOCK_CHILD_PIDS="$TEST_ROOT/child-pids.txt"
 : > "$MOCK_CHILD_PIDS"
 export MOCK_MODELS_FILE="$TEST_ROOT/models.txt"
 : > "$MOCK_MODELS_FILE"
+# Codex only: the reasoning effort of each call ("-" without one).
+export MOCK_EFFORTS_FILE="$TEST_ROOT/efforts.txt"
+: > "$MOCK_EFFORTS_FILE"
 export MOCK_REVIEW_CWDS_FILE="$TEST_ROOT/reviewer-cwds.txt"
 : > "$MOCK_REVIEW_CWDS_FILE"
 export MOCK_REVIEW_PROMPT_FILE="$TEST_ROOT/review-prompt.txt"
@@ -1209,6 +1222,14 @@ if grep -qv -- ' -$' "$MOCK_MODELS_FILE"; then
   echo 'a model was passed without any Ralph model setting' >&2
   exit 1
 fi
+# Likewise no Codex call sets a reasoning effort, so Codex keeps its configured one.
+if [[ "$RALPH_TEST_AGENT" == "codex" ]]; then
+  [[ -s "$MOCK_EFFORTS_FILE" ]]
+  if grep -qv -- ' -$' "$MOCK_EFFORTS_FILE"; then
+    echo 'a reasoning effort was passed without any Ralph effort setting' >&2
+    exit 1
+  fi
+fi
 
 case "$RALPH_TEST_AGENT" in
   codex) model_settings="$HOME/.codex/ralph.json" ;;
@@ -1229,6 +1250,7 @@ run_model_scenario() {
   : > "$MOCK_CALLS_FILE"
   : > "$MOCK_PROMPTS_FILE"
   : > "$MOCK_MODELS_FILE"
+  : > "$MOCK_EFFORTS_FILE"
   model_output="$(cd "$model_root" && env "$@" bash "$RUNNER" 1)"
   grep -Fq 'completed=1' <<< "$model_output"
 }
@@ -1259,6 +1281,63 @@ set -e
 grep -Fq 'is not a valid model name' <<< "$model_error_output"
 [[ ! -s "$MOCK_CALLS_FILE" ]]
 rm "$model_settings"
+
+# expect_effort_refused NAME EXPECTED [ENV...]: the runner stops before any agent call.
+expect_effort_refused() {
+  local name="$1" expected="$2" root output status
+  shift 2
+  root="$TEST_ROOT/$name"
+  make_fixture "$root"
+  export MOCK_CALLS_FILE="$TEST_ROOT/$name-calls.txt"
+  : > "$MOCK_CALLS_FILE"
+  set +e
+  output="$(cd "$root" && env "$@" bash "$RUNNER" 1 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 1 ]]
+  grep -Fq -- "$expected" <<< "$output"
+  [[ ! -s "$MOCK_CALLS_FILE" ]]
+}
+
+if [[ "$RALPH_TEST_AGENT" == "codex" ]]; then
+  # Saved Codex reasoning efforts reach the worker and the reviewer, next to the models.
+  printf '{"model": "saved-worker", "effort": "high", "review_effort": "xhigh"}\n' > "$model_settings"
+  run_model_scenario saved-efforts
+  grep -Fq 'Ralph reasoning effort: worker=high reviewer=xhigh' <<< "$model_output"
+  [[ "$(sort "$MOCK_EFFORTS_FILE" | paste -sd '|')" == "review xhigh|worker high" ]]
+  [[ "$(sort "$MOCK_MODELS_FILE" | paste -sd '|')" == "review saved-worker|worker saved-worker" ]]
+  # A run override replaces only its own role.
+  run_model_scenario run-effort RALPH_REVIEW_EFFORT=low
+  [[ "$(sort "$MOCK_EFFORTS_FILE" | paste -sd '|')" == "review low|worker high" ]]
+  # Without a reviewer effort the reviewer uses the worker's; an effort alone names no model.
+  printf '{"effort": "medium"}\n' > "$model_settings"
+  run_model_scenario worker-only-effort
+  grep -Fq 'Ralph reasoning effort: worker=medium reviewer=medium' <<< "$model_output"
+  if grep -Fq 'Ralph models:' <<< "$model_output"; then
+    echo 'an effort alone must not print Ralph models' >&2
+    exit 1
+  fi
+  [[ "$(sort "$MOCK_EFFORTS_FILE" | paste -sd '|')" == "review medium|worker medium" ]]
+  [[ "$(sort "$MOCK_MODELS_FILE" | paste -sd '|')" == "review -|worker -" ]]
+  run_model_scenario run-only-effort RALPH_EFFORT=max
+  [[ "$(sort "$MOCK_EFFORTS_FILE" | paste -sd '|')" == "review max|worker max" ]]
+  # An invalid effort stops the runner before any agent call.
+  printf '{"effort": "High"}\n' > "$model_settings"
+  expect_effort_refused invalid-effort-settings 'is not a valid reasoning effort'
+  rm "$model_settings"
+  expect_effort_refused invalid-run-effort 'the run effort is not a valid reasoning effort' \
+    'RALPH_EFFORT=high"'
+else
+  # Cursor and agy take the effort in the model name, so an effort stops the runner before any
+  # agent call, from the settings file or from the run.
+  printf '{"effort": "high"}\n' > "$model_settings"
+  expect_effort_refused saved-effort-refused 'only Codex takes a Ralph reasoning effort'
+  rm "$model_settings"
+  expect_effort_refused run-effort-refused 'only Codex takes a Ralph reasoning effort' \
+    RALPH_EFFORT=high
+  expect_effort_refused run-review-effort-refused 'only Codex takes a Ralph reasoning effort' \
+    RALPH_REVIEW_EFFORT=high
+fi
 
 spawn_root="$TEST_ROOT/spawn-child"
 make_fixture "$spawn_root"

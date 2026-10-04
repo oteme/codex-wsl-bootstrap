@@ -11,20 +11,28 @@
 # WORKER_MODEL_ARGS or REVIEW_MODEL_ARGS, which ralph_resolve_agent sets by calling
 # ralph_resolve_models.
 
-# Sets WORKER_MODEL_ARGS and REVIEW_MODEL_ARGS for this run (see ralph_models.py). Without a Ralph
-# model the arrays stay empty and the agent CLI runs with its own default model.
+# Sets WORKER_MODEL_ARGS and REVIEW_MODEL_ARGS, and WORKER_EFFORT and REVIEW_EFFORT, for this run
+# (see ralph_models.py). Without a Ralph model the arrays stay empty and the agent CLI runs with its
+# own default model. Only Codex takes a Ralph effort, which its ralph_resolve_agent adds to the
+# arrays; without one the efforts stay empty and Codex keeps its configured effort.
 ralph_resolve_models() {
   local agent="$1"
   local models worker_model review_model
   models="$(python3 "$SCRIPT_DIR/ralph_models.py" resolve --agent "$agent")"
   worker_model="$(sed -n 1p <<< "$models")"
   review_model="$(sed -n 2p <<< "$models")"
+  WORKER_EFFORT="$(sed -n 3p <<< "$models")"
+  REVIEW_EFFORT="$(sed -n 4p <<< "$models")"
   WORKER_MODEL_ARGS=()
   REVIEW_MODEL_ARGS=()
   [[ -z "$worker_model" ]] || WORKER_MODEL_ARGS=(--model "$worker_model")
   [[ -z "$review_model" ]] || REVIEW_MODEL_ARGS=(--model "$review_model")
   if [[ -n "$worker_model$review_model" ]]; then
     echo "Ralph models: worker=${worker_model:-CLI default} reviewer=${review_model:-CLI default}"
+  fi
+  if [[ -n "$WORKER_EFFORT$REVIEW_EFFORT" ]]; then
+    echo "Ralph reasoning effort: worker=${WORKER_EFFORT:-CLI default}" \
+      "reviewer=${REVIEW_EFFORT:-CLI default}"
   fi
 }
 

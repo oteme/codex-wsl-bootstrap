@@ -14,6 +14,9 @@ RALPH_REVIEW_DIFF_COMMAND="git diff --cached HEAD"
 ralph_resolve_agent() {
   CODEX_BIN="$(python3 "$SCRIPT_DIR/ralph_runtime.py")"
   ralph_resolve_models codex
+  # Codex takes the reasoning effort as a configuration override.
+  [[ -z "$WORKER_EFFORT" ]] || WORKER_MODEL_ARGS+=(-c "model_reasoning_effort=\"$WORKER_EFFORT\"")
+  [[ -z "$REVIEW_EFFORT" ]] || REVIEW_MODEL_ARGS+=(-c "model_reasoning_effort=\"$REVIEW_EFFORT\"")
 }
 
 ralph_worker() {

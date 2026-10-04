@@ -19,7 +19,7 @@ import sys
 import time
 import uuid
 
-from ralph_models import resolve as resolve_models
+from ralph_models import resolve as resolve_models, resolve_efforts
 from ralph_runtime import AGENTS, load_agent, record_agent
 
 RUNNERS = {'codex': 'ralph-run-codex.sh', 'cursor': 'ralph-run-cursor.sh',
@@ -246,8 +246,11 @@ def supervise(run_dir, lock_fd, ready_fd):
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     env = without_session_variables(os.environ) if 'agent' in state else dict(os.environ)
-    # The runner resolves the same models again; passing them keeps the checked models in use.
-    for key, variable in (('worker_model', 'RALPH_MODEL'), ('review_model', 'RALPH_REVIEW_MODEL')):
+    # The runner resolves the same models and efforts again; passing them keeps the checked ones
+    # in use.
+    for key, variable in (('worker_model', 'RALPH_MODEL'), ('review_model', 'RALPH_REVIEW_MODEL'),
+                          ('worker_effort', 'RALPH_EFFORT'),
+                          ('review_effort', 'RALPH_REVIEW_EFFORT')):
         if state.get(key):
             env[variable] = state[key]
     try:
@@ -344,6 +347,10 @@ def start(args, agent):
         raise ValueError(f'the {AGENTS[agent]} Ralph result hook is not installed: {RESULT_HOOK[agent]}; '
                          'rerun Downloads/setup-wsl.cmd')
     worker_model, review_model = resolve_models(agent, args.model, args.review_model)
+    # Only the Codex launcher has --effort and --review-effort; the others can still meet an effort
+    # in RALPH_EFFORT or their settings file, which resolve_efforts refuses.
+    worker_effort, review_effort = resolve_efforts(agent, getattr(args, 'effort', None),
+                                                   getattr(args, 'review_effort', None))
     check_models(agent, executable, (worker_model, review_model))
     logs = ralph / 'logs'
     logs.mkdir(exist_ok=True)
@@ -368,6 +375,8 @@ def start(args, agent):
                      progress=str(ralph / 'progress.txt'), log=str(run_dir / 'runner.log'))
     if worker_model or review_model:
         state.update(worker_model=worker_model, review_model=review_model)
+    if worker_effort or review_effort:
+        state.update(worker_effort=worker_effort, review_effort=review_effort)
     save(run_dir / 'result.json', state)
     read_fd, write_fd = os.pipe()
     with (run_dir / 'supervisor.log').open('wb') as log:
@@ -409,6 +418,11 @@ def main():
     if agent in ('codex', None):
         parser.add_argument('--thread', required=agent == 'codex',
                             help='initiating Codex thread UUID')
+        parser.add_argument('--effort', help='worker reasoning effort for this run (default: saved '
+                                             'Ralph effort, then the Codex configuration)')
+        parser.add_argument('--review-effort', help='policy reviewer reasoning effort for this run '
+                                                    '(default: saved Ralph review effort, then the '
+                                                    'worker effort)')
     if agent in ('cursor', 'antigravity', None):
         parser.add_argument('--conversation', required=agent is not None,
                             help='initiating Cursor or Antigravity conversation UUID')

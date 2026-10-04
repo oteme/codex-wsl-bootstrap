@@ -19,7 +19,8 @@ import unittest
 SOURCE = Path(__file__).resolve().parents[1] / 'skills/ralph-run/scripts/ralph-notify.py'
 THREAD = '11111111-1111-4111-8111-111111111111'
 # The caller's own Ralph and Codex settings, which must never reach a launcher under test.
-AMBIENT = ('RALPH_RUN_ACTIVE', 'CODEX_HOME', 'RALPH_MODEL', 'RALPH_REVIEW_MODEL')
+AMBIENT = ('RALPH_RUN_ACTIVE', 'CODEX_HOME', 'RALPH_MODEL', 'RALPH_REVIEW_MODEL', 'RALPH_EFFORT',
+           'RALPH_REVIEW_EFFORT')
 # What the initiating Cursor or Antigravity session exports to the shell that starts Ralph: its
 # identity, and credentials with which an unattended run could ask the open session for a password.
 SESSION_VARIABLES = ('CURSOR_CONVERSATION_ID', 'CURSOR_AGENT', 'CURSOR_ASKPASS_SECRET',
@@ -235,7 +236,8 @@ sys.exit(int(os.environ.get('QUEUE_FAIL', '0')))
         code = 7 if mode == 'failure' else 0
         (self.bin / 'ralph-run-codex.sh').write_text(
             f"#!/bin/bash\nsleep {delay}\nprintf 'PRIVATE_WORKER_LOG\\n'\n"
-            + 'printf "%s|%s" "${RALPH_MODEL:-}" "${RALPH_REVIEW_MODEL:-}" > "$RUNNER_ENV"\n'
+            + 'printf "%s|%s|%s|%s" "${RALPH_MODEL:-}" "${RALPH_REVIEW_MODEL:-}" '
+            + '"${RALPH_EFFORT:-}" "${RALPH_REVIEW_EFFORT:-}" > "$RUNNER_ENV"\n'
             + "cat <<'EOF'\n" + footer + '\nprogress=/fixture/progress.txt\nlogs=/fixture/logs\nEOF\n'
             + f'exit {code}\n')
 
@@ -392,13 +394,34 @@ else:
         self.worker('completed')
         default = self.wait(json.loads(self.launch().stdout))
         self.assertNotIn('worker_model', default)
-        self.assertEqual((self.root / 'runner-env.txt').read_text(), '|')
+        self.assertNotIn('worker_effort', default)
+        self.assertEqual((self.root / 'runner-env.txt').read_text(), '|||')
         (self.root / 'home/.codex').mkdir(parents=True)
         (self.root / 'home/.codex/ralph.json').write_text(json.dumps({'review_model': 'saved-reviewer'}))
         state = self.wait(json.loads(self.launch('--model', 'gpt-6-sol').stdout))
         self.assertEqual((state['worker_model'], state['review_model']), ('gpt-6-sol', 'saved-reviewer'))
-        self.assertEqual((self.root / 'runner-env.txt').read_text(), 'gpt-6-sol|saved-reviewer')
+        self.assertEqual((self.root / 'runner-env.txt').read_text(), 'gpt-6-sol|saved-reviewer||')
         self.assertNotEqual(self.launch('--model', 'has space').returncode, 0)
+
+    def test_codex_efforts_are_recorded_and_passed_to_the_runner(self):
+        self.worker('completed')
+        (self.root / 'home/.codex').mkdir(parents=True)
+        (self.root / 'home/.codex/ralph.json').write_text(json.dumps({'review_effort': 'xhigh'}))
+        state = self.wait(json.loads(self.launch('--effort', 'high').stdout))
+        self.assertEqual((state['worker_effort'], state['review_effort']), ('high', 'xhigh'))
+        self.assertNotIn('worker_model', state)
+        self.assertEqual((self.root / 'runner-env.txt').read_text(), '||high|xhigh')
+        state = self.wait(json.loads(self.launch('--review-effort', 'low').stdout))
+        self.assertEqual((state['worker_effort'], state['review_effort']), (None, 'low'))
+        self.assertEqual((self.root / 'runner-env.txt').read_text(), '|||low')
+        # An empty or invalid run effort is refused before anything starts.
+        for option, origin in (('--effort', 'the run effort'),
+                               ('--review-effort', 'the run review effort')):
+            for value in ('', 'High', 'high"'):
+                refused = self.launch(option, value)
+                self.assertNotEqual(refused.returncode, 0, (option, value))
+                self.assertIn(f'{origin} is not a valid reasoning effort: {value!r}', refused.stderr)
+        self.assertEqual(len(list((self.ralph / 'logs/runs').iterdir())), 2)
 
     def test_notification_failure_is_durable_without_retry(self):
         self.env['QUEUE_FAIL'] = '8'
@@ -1234,6 +1257,25 @@ class AgentNotifyTests(SupervisorTestCase):
                     self.assertNotEqual(refused.returncode, 0, option)
                     self.assertIn(f"{origin} is not a valid model name: ''", refused.stderr)
                 self.assertFalse((self.ralph / 'logs/runs').exists())
+                self.assertEqual(self.calls(), [])
+
+    def test_cursor_and_antigravity_refuse_a_reasoning_effort(self):
+        """Both take the effort in the model name: no --effort, and no effort from the environment."""
+        for agent in self.AGENTS:
+            with self.subTest(agent=agent):
+                self.reset()
+                script = self.install(agent)
+                for option in ('--effort', '--review-effort'):
+                    refused = self.launch(script, option, 'high')
+                    self.assertNotEqual(refused.returncode, 0, option)
+                    self.assertIn(f'unrecognized arguments: {option} high', refused.stderr)
+                for variable in ('RALPH_EFFORT', 'RALPH_REVIEW_EFFORT'):
+                    self.env[variable] = 'high'
+                    refused = self.launch(script)
+                    del self.env[variable]
+                    self.assertNotEqual(refused.returncode, 0, variable)
+                    self.assertIn('only Codex takes a Ralph reasoning effort', refused.stderr)
+                self.assertFalse((self.ralph / 'logs').exists())
                 self.assertEqual(self.calls(), [])
 
     def test_a_second_runtime_record_is_refused(self):
