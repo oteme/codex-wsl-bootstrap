@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.1.0] - 2026-10-04
+
+### Fixed
+
+- Setup failed when the folder `setup-wsl.cmd` is started from cannot be listed from WSL. The launcher is usually double-clicked in Downloads, and WSL started every setup command there (`/mnt/c/Users/<user>/Downloads`). WSL cannot list a Windows folder that holds a name longer than 255 bytes in UTF-8 (one saved file with a long Japanese title is enough; listing fails with `EIO`), and Python, which searches the current directory for every module it imports when it runs a script from standard input, then stopped before doing anything: Doctor reported six problems (the Cursor guidance and result hooks, the Antigravity result hook, `skills.json` and both Chrome MCP registrations), and the gstack build printed the same traceback. Setup now starts every WSL command in the Linux home directory (`wsl.exe --cd '~'`), so the launcher's folder no longer matters, and the Windows launcher test checks that every `wsl.exe` call does.
+
 ## [0.9.0.0] - 2026-10-04
 
 ### Added
