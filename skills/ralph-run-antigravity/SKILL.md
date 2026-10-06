@@ -98,9 +98,13 @@ tree after the repository lock is released.
   is a hard error.
 - Iterations are serial by design. Do not parallelize them.
 - Each worker prompt contains the worker protocol from `assets/worker-protocol.md`; where the
-  project's `CLAUDE.md`, the PRD or `prd.json` conflicts with it about when to stop or when a story
-  passes, the protocol wins. Workers must not invoke this skill, run the runner, or start another
-  agent run or loop, and must not commit.
+  project's `CLAUDE.md`, the PRD or `prd.json` conflicts with it about when to stop, when a story
+  passes, or which instruction files a worker may change, the protocol wins. Workers must not
+  invoke this skill, run the runner, or start another agent run or loop, and must not commit.
+- Workers leave instruction files (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`,
+  `.claude/rules/`, `.cursor/rules/`) alone unless the story names the file's path, and propose
+  changes in `progress.txt` instead. The runner holds back a story whose staged diff changes one
+  it does not name, as the Codex runner does.
 - The reviewer's output is constrained with `--json-schema`. It must run `git write-tree` in the
   review worktree and report the result as `reviewed_tree`; a reply without the exact staged tree is
   invalid output, so a reviewer that could not run commands in the review worktree cannot approve

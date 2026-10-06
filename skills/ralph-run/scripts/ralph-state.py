@@ -14,6 +14,10 @@ from typing import Any
 
 
 REVIEW_CATEGORIES = {"fallback", "exception", "compatibility", "legacy", "test"}
+# Instruction files (worker protocol): any file with one of these names, and any file under one of
+# these directories, wherever it sits in the repository.
+INSTRUCTION_NAMES = {"CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "GEMINI.md"}
+INSTRUCTION_DIRS = (".claude/rules/", ".cursor/rules/")
 
 
 class NoTransition(ValueError):
@@ -201,6 +205,29 @@ def reset_story(prd_path: Path, progress_path: Path, reason: str, story_ids: lis
         handle.write(f"- {safe_reason}\n---\n")
 
 
+def is_instruction_file(path: str) -> bool:
+    if path.rsplit("/", 1)[-1] in INSTRUCTION_NAMES:
+        return True
+    return any(f"/{directory}" in f"/{path}" for directory in INSTRUCTION_DIRS)
+
+
+def story_text(story: dict[str, Any]) -> str:
+    criteria = story.get("acceptanceCriteria") or []
+    if isinstance(criteria, str):
+        criteria = [criteria]
+    parts = [story.get("title"), story.get("description"), *criteria]
+    return "\n".join(str(part) for part in parts if part)
+
+
+def instruction_changes(prd_path: Path, story_ids: list[str], paths: list[str]) -> None:
+    """Print each changed instruction file that none of the stories under review names."""
+    by_id = {story["id"]: story for story in stories(load_json(prd_path))}
+    texts = [story_text(by_id[story_id]) for story_id in story_ids if story_id in by_id]
+    for path in paths:
+        if path and is_instruction_file(path) and not any(path in text for text in texts):
+            print(one_line(path))
+
+
 def review_result(review_path: Path) -> None:
     approved, _ = validated_findings(load_json(review_path))
     print("approved" if approved else "rejected")
@@ -274,6 +301,11 @@ def main() -> None:
     pending_parser = subparsers.add_parser("pending-count")
     pending_parser.add_argument("prd", type=Path)
 
+    # Changed paths come on standard input, one per line (git diff --name-only).
+    instruction_parser = subparsers.add_parser("instruction-changes")
+    instruction_parser.add_argument("prd", type=Path)
+    instruction_parser.add_argument("story_ids", nargs="+")
+
     args = parser.parse_args()
     if args.command == "apply-transition":
         apply_transition(args.before, args.after)
@@ -289,6 +321,8 @@ def main() -> None:
         next_story(args.prd)
     elif args.command == "pending-count":
         pending_count(args.prd)
+    elif args.command == "instruction-changes":
+        instruction_changes(args.prd, args.story_ids, sys.stdin.read().splitlines())
 
 
 if __name__ == "__main__":

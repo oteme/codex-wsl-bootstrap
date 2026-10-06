@@ -96,9 +96,13 @@ tree after the repository lock is released.
   from the exact staged review tree. Only run it in a trusted repository.
 - Iterations are serial by design. Do not parallelize them.
 - Each worker prompt contains the worker protocol from `assets/worker-protocol.md`; where the
-  project's `CLAUDE.md`, the PRD or `prd.json` conflicts with it about when to stop or when a story
-  passes, the protocol wins. Workers must not invoke this skill, run the runner, or start another
-  agent run or loop, and must not commit.
+  project's `CLAUDE.md`, the PRD or `prd.json` conflicts with it about when to stop, when a story
+  passes, or which instruction files a worker may change, the protocol wins. Workers must not
+  invoke this skill, run the runner, or start another agent run or loop, and must not commit.
+- Workers leave instruction files (`CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`,
+  `.claude/rules/`, `.cursor/rules/`) alone unless the story names the file's path, and propose
+  changes in `progress.txt` instead. The runner holds back a story whose staged diff changes one
+  it does not name, as the Codex runner does.
 - The final message of a worker is the last assistant message of the run, and the run must end with
   a successful `result` event.
 - Cursor has no output schema option, so the reviewer receives the review JSON Schema in its prompt
