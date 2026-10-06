@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.10.0.0] - 2026-10-06
+
+### Changed
+
+- Ralph workers no longer write instruction files: any `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` or `GEMINI.md`, and any file under `.claude/rules/` or `.cursor/rules/`, wherever it sits in the repository. Agents load these files as standing instructions, and both Ralph's own `CLAUDE.md` ("Update CLAUDE.md Files") and the worker protocol ("worth adding to nearby AGENTS.md files") told every worker to write what it learned into them. Over hundreds of stories that grew one project's instruction files to about 900,000 characters, most of it written by workers and none of it chosen by a person, and every later session that touched those directories loaded it. A worker may now change an instruction file only when the story's title, description or acceptance criteria name that file's path; otherwise it ends its `progress.txt` entry with "Proposed instruction changes:" (the file and the text to add) for a person to decide on. The worker protocol says so and outranks the project's `CLAUDE.md` on it, as it already does on when to stop and when a story passes.
+- Before the policy review, the runner checks the staged diff (`ralph-state.py instruction-changes`). A story that changed an instruction file that none of the stories under review names is held back like a rejected review, without running the reviewer: its `passes` goes back to false, its work stays uncommitted, and a `POLICY GATE FAILED` entry in `progress.txt` asks the next iteration to undo the change and propose the text instead. The run continues; this is not a runner error.
+
+### Unchanged
+
+- A story that names the instruction file it changes is reviewed and committed as before, and the `## Codebase Patterns` section of `progress.txt` still collects learnings for the rest of the run.
+
 ## [0.9.1.0] - 2026-10-04
 
 ### Fixed

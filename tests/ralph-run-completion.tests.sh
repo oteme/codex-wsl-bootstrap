@@ -259,6 +259,16 @@ with open(path, "w", encoding="utf-8") as handle:
     handle.write("\n")
 PY
     printf 'implementation attempt\n' >> "$codex_cwd/app.txt"
+    # An instruction file: every time, or only on the first worker call (the next worker removes
+    # it, as the gate's note in progress.txt asks).
+    if [[ "$MOCK_MODE" == "instruction-file" || "$MOCK_MODE" == "instruction-file-named" \
+      || ( "$MOCK_MODE" == "instruction-file-once" && "$worker_count" -eq 1 ) ]]; then
+      mkdir -p "$codex_cwd/docs"
+      printf 'a learning\n' > "$codex_cwd/docs/CLAUDE.md"
+    fi
+    if [[ "$MOCK_MODE" == "instruction-file-once" && "$worker_count" -gt 1 ]]; then
+      rm -f "$codex_cwd/docs/CLAUDE.md"
+    fi
     if [[ "$MOCK_MODE" == "two-stories" ]]; then
       python3 - "$codex_cwd/scripts/ralph/prd.json" <<'PY'
 import json
@@ -707,6 +717,76 @@ EOF
     exit 1
   fi
 fi
+
+# The worker protocol keeps workers out of instruction files unless the story names the file.
+grep -Fq 'which instruction files you may change, the protocol wins' "$MOCK_PROMPTS_FILE"
+grep -Fq 'Proposed instruction changes:' "$MOCK_PROMPTS_FILE"
+
+# A story that changes an instruction file it does not name is held back before review: it stays
+# incomplete, nothing is committed, and the change stays in the working tree.
+instruction_root="$TEST_ROOT/instruction"
+make_fixture "$instruction_root"
+export MOCK_MODE="instruction-file"
+export MOCK_CALLS_FILE="$TEST_ROOT/instruction-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/instruction-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+instruction_output="$(cd "$instruction_root" && bash "$RUNNER" 2)"
+grep -Fq 'completed=0' <<< "$instruction_output"
+grep -Fq 'Instruction files changed without US-001 naming them' <<< "$instruction_output"
+grep -Fxq '  docs/CLAUDE.md' <<< "$instruction_output"
+[[ "$(grep -c '^worker$' "$MOCK_CALLS_FILE")" -eq 2 ]]
+[[ "$(grep -c '^review$' "$MOCK_CALLS_FILE" || true)" -eq 0 ]]
+grep -Fq 'POLICY GATE FAILED' "$instruction_root/scripts/ralph/progress.txt"
+grep -Fq 'Changed instruction files that the story does not name: docs/CLAUDE.md.' \
+  "$instruction_root/scripts/ralph/progress.txt"
+[[ "$(git -C "$instruction_root" rev-list --count HEAD)" -eq 1 ]]
+[[ -f "$instruction_root/docs/CLAUDE.md" ]]
+python3 - "$instruction_root/scripts/ralph/prd.json" <<'PY'
+import json, sys
+assert json.load(open(sys.argv[1], encoding="utf-8"))["userStories"][0]["passes"] is False
+PY
+
+# The next worker undoes the change, and the story is reviewed and committed without it.
+instruction_once_root="$TEST_ROOT/instruction-once"
+make_fixture "$instruction_once_root"
+export MOCK_MODE="instruction-file-once"
+export MOCK_CALLS_FILE="$TEST_ROOT/instruction-once-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/instruction-once-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+instruction_once_output="$(cd "$instruction_once_root" && bash "$RUNNER" 3)"
+grep -Fq 'completed=1' <<< "$instruction_once_output"
+grep -Fq 'iterationsRun=2' <<< "$instruction_once_output"
+[[ "$(grep -c '^review$' "$MOCK_CALLS_FILE")" -eq 1 ]]
+git -C "$instruction_once_root" log -1 --format=%s | grep -Fq 'feat: US-001 - Test gate'
+if git -C "$instruction_once_root" ls-files | grep -Fxq 'docs/CLAUDE.md'; then
+  echo 'an instruction file the story does not name must not be committed' >&2
+  exit 1
+fi
+
+# A story whose acceptance criteria name the file may change it.
+instruction_named_root="$TEST_ROOT/instruction-named"
+make_fixture "$instruction_named_root"
+python3 - "$instruction_named_root/scripts/ralph/prd.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+document = json.load(open(path, encoding="utf-8"))
+document["userStories"][0]["acceptanceCriteria"].append("Record the convention in docs/CLAUDE.md")
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(document, handle, indent=2)
+    handle.write("\n")
+PY
+git -C "$instruction_named_root" commit -qam 'name the instruction file'
+export MOCK_MODE="instruction-file-named"
+export MOCK_CALLS_FILE="$TEST_ROOT/instruction-named-calls.txt"
+export MOCK_PROMPTS_FILE="$TEST_ROOT/instruction-named-prompts.txt"
+: > "$MOCK_CALLS_FILE"
+: > "$MOCK_PROMPTS_FILE"
+instruction_named_output="$(cd "$instruction_named_root" && bash "$RUNNER" 2)"
+grep -Fq 'completed=1' <<< "$instruction_named_output"
+grep -Fq 'iterationsRun=1' <<< "$instruction_named_output"
+git -C "$instruction_named_root" ls-files | grep -Fxq 'docs/CLAUDE.md'
 
 review_artifact_root="$TEST_ROOT/review-artifact"
 make_fixture "$review_artifact_root"
@@ -1486,4 +1566,4 @@ if [[ "$RALPH_TEST_AGENT" == "antigravity" ]]; then
   done
 fi
 
-printf 'PASS (%s): runner-owned worker protocol, policy rejection/repair, budget-bounded continuation, sanitized prd.json, dirty tree absorption, failure rollback, commit gate, recursion guard, and lock release.\n' "$RALPH_TEST_AGENT"
+printf 'PASS (%s): runner-owned worker protocol, policy rejection/repair, instruction-file gate, budget-bounded continuation, sanitized prd.json, dirty tree absorption, failure rollback, commit gate, recursion guard, and lock release.\n' "$RALPH_TEST_AGENT"

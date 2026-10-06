@@ -119,8 +119,16 @@ tree after the repository lock is released. A second signal cancels the pending 
   be verified or done (a live service, a device, an account, an approval, an outside decision or
   record) is recorded instead of keeping `passes: false`. Workers read `RALPH_DIR/CLAUDE.md` as
   project notes, such as `Authorized actions`. Where `CLAUDE.md`, the PRD, or `prd.json`
-  conflicts with the protocol about when to stop or when a story passes, the protocol wins. A
-  project cannot edit the protocol; it changes only with this skill.
+  conflicts with the protocol about when to stop, when a story passes, or which instruction files a
+  worker may change, the protocol wins. A project cannot edit the protocol; it changes only with
+  this skill.
+- Workers leave instruction files alone (any `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` or
+  `GEMINI.md`, and anything under `.claude/rules/` or `.cursor/rules/`) unless the story's title,
+  description or acceptance criteria name the file's path. A learning goes into the worker's
+  `progress.txt` entry under "Proposed instruction changes:" for a person to decide on. Before the
+  policy review, the runner checks the staged diff; a story that changed an instruction file it
+  does not name stays incomplete, its work stays uncommitted, and the gate's note in
+  `progress.txt` asks the next iteration to undo the change.
 - Child agents implement one story directly and are told to finish it within their turn rather
   than hand unfinished work to a later iteration. They must not invoke `ralph-run`, run the
   runner script, launch another `codex exec`, or start another autonomous loop.

@@ -276,4 +276,36 @@ write_prd "$after" true true
 [[ -z "$(python3 "$STATE_TOOL" next-story "$after")" ]]
 [[ "$(python3 "$STATE_TOOL" pending-count "$after")" == "0" ]]
 
+# instruction-changes prints the changed instruction files that none of the stories under review
+# names, in input order; other files and named instruction files pass.
+write_prd "$after" true false
+edit_json "$after" 'data["userStories"][0]["acceptanceCriteria"] = ["Document it in `docs/CLAUDE.md`"]'
+changed_paths='app.txt
+docs/CLAUDE.md
+backend/AGENTS.md
+.claude/rules/x.md
+pkg/.cursor/rules/y.mdc
+GEMINI.md
+CLAUDE.local.md
+notes/CLAUDE.md.bak
+my.claude/rules/z.md'
+expected_unnamed='backend/AGENTS.md
+.claude/rules/x.md
+pkg/.cursor/rules/y.mdc
+GEMINI.md
+CLAUDE.local.md'
+[[ "$(python3 "$STATE_TOOL" instruction-changes "$after" US-001 <<< "$changed_paths")" == "$expected_unnamed" ]]
+[[ "$(python3 "$STATE_TOOL" instruction-changes "$after" US-001 US-002 <<< "$changed_paths")" == "$expected_unnamed" ]]
+[[ "$(python3 "$STATE_TOOL" instruction-changes "$after" US-002 <<< "$changed_paths" | head -1)" == "docs/CLAUDE.md" ]]
+[[ "$(python3 "$STATE_TOOL" instruction-changes "$after" US-002 <<< "$changed_paths" | wc -l)" -eq 6 ]]
+[[ -z "$(python3 "$STATE_TOOL" instruction-changes "$after" US-001 <<< 'app.txt')" ]]
+# A renamed instruction file reaches the gate under its old name too (the runner passes
+# --no-renames), and the old name is what counts.
+[[ "$(python3 "$STATE_TOOL" instruction-changes "$after" US-001 <<< $'backend/AGENTS.md\nbackend/AGENTS.md.old')" == "backend/AGENTS.md" ]]
+# The title and description name a file as well as the acceptance criteria do.
+edit_json "$after" 'data["userStories"][1]["description"] = "Rewrite backend/AGENTS.md"'
+[[ "$(python3 "$STATE_TOOL" instruction-changes "$after" US-002 <<< 'backend/AGENTS.md')" == "" ]]
+printf '{"userStories":1}\n' > "$after"
+expect_failure 'userStories' python3 "$STATE_TOOL" instruction-changes "$after" US-001 <<< 'CLAUDE.md'
+
 printf 'PASS: Ralph state sanitizing, multi-story transitions, and policy-result trust boundaries.\n'

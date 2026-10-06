@@ -255,7 +255,7 @@ Do the implementation work directly in the project. $RALPH_WORKER_RESTRICTION
 
 The Ralph directory is $RALPH_DIR. It holds prd.json, progress.txt, and CLAUDE.md.
 
-Follow the Ralph worker protocol below; it comes with the runner, not with the project. Read $RALPH_DIR/CLAUDE.md in full as this project's notes, such as its authorized external actions, and follow it where it does not conflict with the protocol. Where CLAUDE.md, the PRD, or prd.json conflicts with the protocol about when to stop or when a story passes, the protocol wins.
+Follow the Ralph worker protocol below; it comes with the runner, not with the project. Read $RALPH_DIR/CLAUDE.md in full as this project's notes, such as its authorized external actions, and follow it where it does not conflict with the protocol. Where CLAUDE.md, the PRD, or prd.json conflicts with the protocol about when to stop, when a story passes, or which instruction files you may change, the protocol wins.
 
 $worker_protocol
 
@@ -373,6 +373,31 @@ EOF
     echo "error: unstaged or untracked changes remain outside Ralph logs" >&2
     [[ -n "$unexpected_untracked" ]] && printf '%s\n' "$unexpected_untracked" >&2
     exit 1
+  fi
+
+  # Workers leave instruction files alone unless a story under review names the file (worker
+  # protocol). A story that changed one anyway is held back like a rejected review, before the
+  # reviewer runs: it stays incomplete, its work stays uncommitted, and the next iteration moves
+  # the text into its progress.txt entry.
+  if ! instruction_changes="$(
+    git -C "$PROJECT_ROOT" -c core.quotepath=off diff --cached --name-only --no-renames "$iteration_head" \
+      | python3 "$STATE_TOOL" instruction-changes "$RALPH_DIR/prd.json" "${STORY_IDS[@]}"
+  )"; then
+    git -C "$PROJECT_ROOT" reset --quiet
+    cp "$before_prd" "$RALPH_DIR/prd.json"
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Could not check the staged snapshot for instruction files; story was not approved." "${STORY_IDS[@]}"
+    echo "error: could not check instruction files in iteration $i" >&2
+    exit 1
+  fi
+  if [[ -n "$instruction_changes" ]]; then
+    git -C "$PROJECT_ROOT" reset --quiet
+    python3 "$STATE_TOOL" reset "$RALPH_DIR/prd.json" "$PROGRESS_FILE" \
+      "Changed instruction files that the story does not name: $(paste -sd ' ' <<< "$instruction_changes"). Undo those changes (remove a file you created, restore an edited one from HEAD) and put the text under \"Proposed instruction changes:\" in your progress.txt entry instead." \
+      "${STORY_IDS[@]}"
+    echo "Instruction files changed without $STORY_ID_LIST naming them; the story stays incomplete and its work stays uncommitted for repair in the next iteration:"
+    sed 's/^/  /' <<< "$instruction_changes"
+    continue
   fi
 
   review_index_tree="$(git -C "$PROJECT_ROOT" write-tree)"

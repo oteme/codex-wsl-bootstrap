@@ -155,9 +155,19 @@ device, an account, an approval, an outside decision or record) is recorded in `
 instead of keeping `passes: false`. Its fail-close and clean-break rules describe the code the
 worker writes: no speculative fallback, no compatibility path the story does not require, obsolete
 paths removed, no weakened tests. Where the project's `scripts/ralph/CLAUDE.md`, the PRD, or
-`prd.json` conflicts with the protocol about when to stop or when a story passes, the protocol
-wins, and a project cannot edit it. `ralph-bootstrap` generates `CLAUDE.md` as project notes with
-an `Authorized actions` list for external resources.
+`prd.json` conflicts with the protocol about when to stop, when a story passes, or which
+instruction files a worker may change, the protocol wins, and a project cannot edit it.
+`ralph-bootstrap` generates `CLAUDE.md` as project notes with an `Authorized actions` list for
+external resources.
+
+Workers leave instruction files alone (any `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md` or
+`GEMINI.md`, and anything under `.claude/rules/` or `.cursor/rules/`) unless the story's title,
+description or acceptance criteria name the file's path. Agents load these files as standing
+instructions, and Ralph's own `CLAUDE.md` tells workers to write what they learn into them; over
+hundreds of stories that grew one project's instruction files to about 900,000 characters that no
+person had chosen. A worker proposes such a change in its `progress.txt` entry under "Proposed
+instruction changes:" instead, and the runner holds back, before the policy review, a story whose
+staged diff changes an instruction file it does not name.
 
 The installed `prd` skill requires explicit failure behavior and compatibility decisions, settles
 open implementation choices in the PRD instead of turning them into spikes or prerequisites, and
