@@ -75,10 +75,4 @@ In plans, specs, PRDs, implementations, and reviews:
 - Treat new fallback paths, compatibility shims, retained legacy branches, swallowed exceptions,
   and weakened/skipped tests as specification changes that require explicit acceptance criteria.
 
-For detailed explanations outside of a Decision Brief / AskUserQuestion, use an HTML artifact.
-
-Explain like I'm someone who knows nothing about this topic, using an HTML artifact with big pictures and few words.
-
-Keep AskUserQuestion as the decision gate. It may contain a compact Decision Brief, but do not duplicate the full detailed explanation there.
-The HTML artifact is for understanding; AskUserQuestion is for choosing.
 <!-- END codex-workstation-bootstrap -->
