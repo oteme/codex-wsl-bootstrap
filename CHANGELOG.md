@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.10.0.1] - 2026-10-23
+
+### Removed
+
+- Global agent guidance no longer requires HTML artifacts for detailed explanations or specifies AskUserQuestion as the decision gate.
+
 ## [0.10.0.0] - 2026-10-06
 
 ### Changed
